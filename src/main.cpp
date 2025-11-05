@@ -59,6 +59,9 @@ static void mergeBeaconData(std::map<uint32_t, BeaconData>& target, const Beacon
         if (existing.firstSeen != 0 && (combined.firstSeen == 0 || existing.firstSeen < combined.firstSeen)) {
             combined.firstSeen = existing.firstSeen;
         }
+        if (combined.detectedLocation.length() == 0 && existing.detectedLocation.length() > 0) {
+            combined.detectedLocation = existing.detectedLocation;
+        }
         target[incoming.animalId] = combined;
     } else {
         if (incoming.lastSeen > existing.lastSeen) {
@@ -71,6 +74,9 @@ static void mergeBeaconData(std::map<uint32_t, BeaconData>& target, const Beacon
         }
         if (incoming.firstSeen != 0 && (existing.firstSeen == 0 || incoming.firstSeen < existing.firstSeen)) {
             existing.firstSeen = incoming.firstSeen;
+        }
+        if (incoming.detectedLocation.length() > 0) {
+            existing.detectedLocation = incoming.detectedLocation;
         }
     }
 }
@@ -349,6 +355,7 @@ void loop() {
                 beacon.firstSeen = msg.timestamp;
                 beacon.lastSeen = msg.timestamp;
                 beacon.isPresent = msg.isPresent;
+                beacon.detectedLocation = String(msg.location);
                 mergeBeaconData(slaveBeaconData, beacon);
             }
             
@@ -408,8 +415,9 @@ void loop() {
 
             for (const auto& pair : allBeacons) {
                 const BeaconData& beacon = pair.second;
-                Serial.printf("[SYNC]   [ANIMAL] ID=%u, Dist=%.2fm, RSSI=%d dBm\n",
-                             beacon.animalId, beacon.distance, beacon.rssi);
+                Serial.printf("[SYNC]   [ANIMAL] ID=%u, Dist=%.2fm, RSSI=%d dBm, Loc=%s\n",
+                             beacon.animalId, beacon.distance, beacon.rssi,
+                             beacon.detectedLocation.length() > 0 ? beacon.detectedLocation.c_str() : DEVICE_LOCATION);
 
                 JsonObject animal = animalsArray.createNestedObject();
                 animal["tag_id"] = beacon.animalId;
@@ -417,6 +425,11 @@ void loop() {
                 animal["rssi"] = beacon.rssi;
                 animal["is_present"] = beacon.isPresent;
                 animal["timestamp"] = beacon.lastSeen;
+                if (beacon.detectedLocation.length() > 0) {
+                    animal["detected_location"] = beacon.detectedLocation;
+                } else {
+                    animal["detected_location"] = DEVICE_LOCATION;
+                }
             }
 
             String payload;

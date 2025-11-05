@@ -365,6 +365,7 @@ void BLEScanner::processDevice(BLEAdvertisedDevice advertisedDevice) {
         newBeacon.firstSeen = currentTime;
         newBeacon.lastSeen = currentTime;
         newBeacon.isPresent = isPresent;
+        newBeacon.detectedLocation = DEVICE_LOCATION;
         
         beacons[animalId] = newBeacon;
         
@@ -377,6 +378,9 @@ void BLEScanner::processDevice(BLEAdvertisedDevice advertisedDevice) {
         beacon.distance = distance;
         beacon.lastSeen = currentTime;
         beacon.isPresent = isPresent;
+        if (beacon.detectedLocation.length() == 0) {
+            beacon.detectedLocation = DEVICE_LOCATION;
+        }
     }
     
     // Actualizar análisis de comportamiento

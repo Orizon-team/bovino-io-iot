@@ -112,6 +112,7 @@ struct BeaconData {
     unsigned long firstSeen;
     unsigned long lastSeen;
     bool isPresent;
+    String detectedLocation;
 };
 
 extern std::map<uint32_t, BeaconData> slaveBeaconData;

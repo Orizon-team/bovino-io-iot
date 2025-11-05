@@ -2,12 +2,42 @@
 #include "wifi_manager.h"
 #include "alerts.h"
 #include "display_manager.h"
+#include <cstring>
 
 // Definición de la instancia global
 APIClient apiClient;
 
 // ==================== Constructor ====================
 APIClient::APIClient() {
+}
+
+bool APIClient::checkDeviceRegistration(const char* deviceId) {
+    Serial.println("[REG] Consultando API para verificar estado del dispositivo...");
+    Serial.printf("[REG]   ID consultado: %s\n", deviceId);
+    delay(600);
+
+    // Simulación: el dispositivo con ID "1" ya existe; otros requieren registro.
+    bool alreadyRegistered = strcmp(deviceId, "1") == 0;
+
+    if (alreadyRegistered) {
+        Serial.println("[REG] [OK] Dispositivo ya registrado en backend (simulado)");
+    } else {
+        Serial.println("[REG] [INFO] Dispositivo no encontrado: se requiere registro");
+    }
+
+    return alreadyRegistered;
+}
+
+bool APIClient::registerDevice(const char* deviceId, const char* location, ZoneType zoneType) {
+    Serial.println("[REG] Registrando dispositivo en backend (simulado)...");
+    Serial.printf("[REG]   ID: %s | Ubicación: %s | Tipo zona: %d\n", deviceId, location, static_cast<int>(zoneType));
+    delay(800);
+
+    Serial.println("[REG]   Enviando payload de registro...");
+    delay(500);
+
+    Serial.println("[REG] [OK] Registro completado exitosamente (simulado)");
+    return true;
 }
 
 // ==================== Sincronización de Tiempo ====================
@@ -27,10 +57,10 @@ bool APIClient::initializeTimeSync() {
     }
     
     if (now >= 8 * 3600 * 2) {
-        Serial.println("\n[NTP] ✓ Tiempo sincronizado correctamente");
+    Serial.println("\n[NTP] [OK] Tiempo sincronizado correctamente");
         return true;
     } else {
-        Serial.println("\n[NTP] ⚠ Advertencia: Tiempo no sincronizado");
+    Serial.println("\n[NTP] [WARNING] Advertencia: Tiempo no sincronizado");
         return false;
     }
 }
@@ -63,7 +93,7 @@ bool APIClient::sendAttendance(const std::vector<BleData>& devices, int stageNum
 
         // Iniciar conexión HTTP
         if (!http.begin(API_URL)) {
-            Serial.println("[API] ❌ Error: No se pudo iniciar la conexión HTTP");
+            Serial.println("[API] [ERROR] No se pudo iniciar la conexión HTTP");
             alertManager.loaderOff();
             alertManager.showError();
             delay(2000);
@@ -104,7 +134,7 @@ bool APIClient::sendAttendance(const std::vector<BleData>& devices, int stageNum
             } 
             else {
                 // Error no recuperable
-                Serial.printf("[API] ❌ Error no recuperable: %d\n", httpCode);
+                Serial.printf("[API] [ERROR] Error no recuperable: %d\n", httpCode);
                 displayManager.showHTTPError(stageNumber, httpCode);
                 alertManager.showError();
                 delay(3000);
@@ -113,7 +143,7 @@ bool APIClient::sendAttendance(const std::vector<BleData>& devices, int stageNum
         } 
         else {
             // Error de conexión
-            Serial.printf("[API] ❌ Error de conexión: %d\n", httpCode);
+            Serial.printf("[API] [ERROR] Error de conexión: %d\n", httpCode);
             displayManager.showHTTPError(stageNumber, httpCode);
             alertManager.showError();
 
@@ -131,7 +161,7 @@ bool APIClient::sendAttendance(const std::vector<BleData>& devices, int stageNum
 
         // Límite de intentos (opcional)
         if (attempt > 20) {
-            Serial.println("[API] ⚠ Máximo de intentos alcanzado");
+            Serial.println("[API] [WARNING] Máximo de intentos alcanzado");
             break;
         }
     }

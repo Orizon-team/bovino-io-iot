@@ -28,7 +28,7 @@ bool WiFiManager::connect() {
     bool connected = attemptConnection(WIFI_TIMEOUT);
 
     if (connected) {
-        Serial.println("\n[WiFi] ✓ Conexión exitosa");
+    Serial.println("\n[WiFi] [OK] Conexión exitosa");
         Serial.printf("[WiFi] IP Local: %s\n", WiFi.localIP().toString().c_str());
         Serial.printf("[WiFi] RSSI: %d dBm\n", WiFi.RSSI());
 
@@ -41,7 +41,7 @@ bool WiFiManager::connect() {
         return true;
     } 
     else {
-        Serial.println("\n[WiFi] ❌ Error: No se pudo conectar");
+    Serial.println("\n[WiFi] [ERROR] No se pudo conectar");
         
         displayManager.showWiFiError();
         alertManager.showError();

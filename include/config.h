@@ -56,7 +56,7 @@ constexpr unsigned long SCAN_INTERVAL_ECO = 60000;
 constexpr int ANIMALS_CHANGE_THRESHOLD = 3;
 constexpr int STABLE_SCANS_FOR_ECO = 10;
 
-#define TARGET_COMPANY_ID 0x1234
+#define TARGET_COMPANY_ID 0x004C
 extern const char* BLE_DEVICE_NAME;
 
 // ==================== TIMINGS MAESTRO-ESCLAVO ====================
@@ -113,6 +113,8 @@ struct BeaconData {
     unsigned long lastSeen;
     bool isPresent;
 };
+
+extern std::map<uint32_t, BeaconData> slaveBeaconData;
 
 struct AnimalBehavior {
     uint32_t animalId;

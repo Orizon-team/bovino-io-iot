@@ -7,6 +7,7 @@
 #include "display_manager.h"
 #include "alerts.h"
 #include "espnow_manager.h"
+#include <math.h>
 
 unsigned long lastSyncTime = 0;
 unsigned long lastDisplayUpdate = 0;
@@ -22,6 +23,55 @@ static const char* zoneTypeToCode(ZoneType type) {
         case ZONE_PASTURE: return "PASTURE";
         case ZONE_REST:    return "REST";
         default:           return "GENERIC";
+    }
+}
+
+static void mergeBeaconData(std::map<uint32_t, BeaconData>& target, const BeaconData& incoming) {
+    auto it = target.find(incoming.animalId);
+    if (it == target.end()) {
+        target[incoming.animalId] = incoming;
+        return;
+    }
+
+    BeaconData& existing = it->second;
+    constexpr float EPSILON = 0.05f;
+    bool incomingHasDistance = incoming.distance >= 0.0f;
+    bool existingHasDistance = existing.distance >= 0.0f;
+    bool replaceWithIncoming = false;
+
+    if (incomingHasDistance && !existingHasDistance) {
+        replaceWithIncoming = true;
+    } else if (incomingHasDistance && existingHasDistance) {
+        if (incoming.distance + EPSILON < existing.distance) {
+            replaceWithIncoming = true;
+        } else if (fabsf(incoming.distance - existing.distance) <= EPSILON &&
+                   incoming.lastSeen > existing.lastSeen) {
+            replaceWithIncoming = true;
+        }
+    } else if (!incomingHasDistance && !existingHasDistance) {
+        if (incoming.lastSeen > existing.lastSeen) {
+            replaceWithIncoming = true;
+        }
+    }
+
+    if (replaceWithIncoming) {
+        BeaconData combined = incoming;
+        if (existing.firstSeen != 0 && (combined.firstSeen == 0 || existing.firstSeen < combined.firstSeen)) {
+            combined.firstSeen = existing.firstSeen;
+        }
+        target[incoming.animalId] = combined;
+    } else {
+        if (incoming.lastSeen > existing.lastSeen) {
+            existing.lastSeen = incoming.lastSeen;
+            existing.rssi = incoming.rssi;
+            existing.isPresent = incoming.isPresent;
+        }
+        if (incomingHasDistance && (!existingHasDistance || incoming.distance < existing.distance)) {
+            existing.distance = incoming.distance;
+        }
+        if (incoming.firstSeen != 0 && (existing.firstSeen == 0 || incoming.firstSeen < existing.firstSeen)) {
+            existing.firstSeen = incoming.firstSeen;
+        }
     }
 }
 
@@ -299,7 +349,7 @@ void loop() {
                 beacon.firstSeen = msg.timestamp;
                 beacon.lastSeen = msg.timestamp;
                 beacon.isPresent = msg.isPresent;
-                slaveBeaconData[msg.animalId] = beacon;
+                mergeBeaconData(slaveBeaconData, beacon);
             }
             
             alertManager.loaderOff();
@@ -333,7 +383,7 @@ void loop() {
             std::map<uint32_t, BeaconData> allBeacons = beacons;
 
             for (const auto& pair : slaveBeaconData) {
-                allBeacons[pair.first] = pair.second;
+                mergeBeaconData(allBeacons, pair.second);
             }
             
             if (allBeacons.size() == 0) {

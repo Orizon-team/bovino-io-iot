@@ -37,6 +37,12 @@ extern const char* WIFI_SSID;
 extern const char* WIFI_PASSWORD;          
 constexpr unsigned long WIFI_TIMEOUT = 20000;
 constexpr unsigned long WIFI_RETRY_INTERVAL = 300000;
+extern bool ENABLE_WIFI_SYNC; // Permite desactivar WiFi para simulación
+extern bool ENABLE_WIFI_PORTAL; // Activa el portal de configuracion por web
+extern const char* CONFIG_PORTAL_PASSWORD;
+
+// ==================== ZONA GEOGRAFICA ====================
+extern const char* ZONE_NAME; // Nombre de la zona macro que agrupa a maestro/esclavos
 
 // ==================== API ====================
 extern const char* API_URL;

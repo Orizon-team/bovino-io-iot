@@ -5,6 +5,10 @@ const char* BLE_DEVICE_NAME = "ESP32-BovinoIOT";
 // ==================== CONFIGURACIÓN WiFi ====================
 const char* WIFI_SSID = "UZIEL 1257";
 const char* WIFI_PASSWORD = "123456789";
+bool ENABLE_WIFI_SYNC = true;
+bool ENABLE_WIFI_PORTAL = true;
+const char* CONFIG_PORTAL_PASSWORD = "bovinoiot";
+const char* ZONE_NAME = "Zona Centro";
 
 // ==================== CONFIGURACIÓN API ====================
 const char* API_URL = "https://api-schoolguardian.onrender.com/api/livestock/zone-data";

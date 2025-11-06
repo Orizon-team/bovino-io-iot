@@ -205,20 +205,35 @@ void setup() {
             Serial.println("[INIT] [ERROR] Error al inicializar ESP-NOW");
             alertManager.showError();
         }
+
+        wifiManager.begin();
         
-        // Conectar WiFi
-        Serial.println("[INIT] Conectando WiFi...");
-        displayManager.showMessage("Conectando WiFi", WIFI_SSID);
-        
-        if (wifiManager.connect()) {
-            Serial.printf("[INIT] [OK] WiFi conectado: %s\n", wifiManager.getLocalIP().c_str());
-            alertManager.showSuccess();
-            delay(1000);
-            apiClient.initializeTimeSync();
+        if (ENABLE_WIFI_SYNC) {
+            Serial.println("[INIT] Conectando WiFi...");
+            String ssidLabel = wifiManager.getConfiguredSSID();
+            if (ssidLabel.length() == 0) {
+                ssidLabel = "Config portal";
+            }
+            displayManager.showMessage("Conectando WiFi", ssidLabel.c_str());
+
+            if (wifiManager.connect()) {
+                Serial.printf("[INIT] [OK] WiFi conectado: %s\n", wifiManager.getLocalIP().c_str());
+                alertManager.showSuccess();
+                delay(1000);
+                apiClient.initializeTimeSync();
+            } else {
+                Serial.println("[INIT] [WARNING] Sin WiFi - Solo ESP-NOW");
+                displayManager.showMessage("Sin WiFi", "Solo ESP-NOW");
+                delay(2000);
+            }
         } else {
-            Serial.println("[INIT] [WARNING] Sin WiFi - Solo ESP-NOW");
-            displayManager.showMessage("Sin WiFi", "Solo ESP-NOW");
+            Serial.println("[INIT] WiFi deshabilitado por configuracion (modo prueba)");
+            displayManager.showMessage("WiFi off (test)", "Solo ESP-NOW");
+            alertManager.showSuccess();
             delay(2000);
+            if (ENABLE_WIFI_PORTAL) {
+                Serial.println("[INIT] Portal WiFi activo para configuracion manual.");
+            }
         }
         
     } else {
@@ -262,6 +277,10 @@ void loop() {
     }
     
     unsigned long now = millis();
+
+    if (CURRENT_DEVICE_MODE == DEVICE_MASTER) {
+        wifiManager.loop();
+    }
     
     // ==================== 1. ESCANEO ADAPTATIVO ====================
     // El scanner maneja internamente los intervalos según el modo (ACTIVE/NORMAL/ECO)
@@ -371,18 +390,21 @@ void loop() {
         if (now - lastSyncTime > MASTER_SYNC_INTERVAL) {
             lastSyncTime = now;
             
-            // Verificar conexión WiFi
-            if (!wifiManager.isConnected()) {
-                Serial.println("[SYNC] WiFi desconectado, intentando reconectar...");
-                displayManager.showMessage("Conectando", "WiFi...");
-                wifiManager.reconnect();
-                
+            if (ENABLE_WIFI_SYNC) {
                 if (!wifiManager.isConnected()) {
-                    Serial.println("[SYNC] Sin WiFi - Datos en buffer offline");
-                    displayManager.showMessage("Sin WiFi", "Modo offline");
-                    delay(2000);
-                    return;
+                    Serial.println("[SYNC] WiFi desconectado, intentando reconectar...");
+                    displayManager.showMessage("Conectando", "WiFi...");
+                    wifiManager.reconnect();
+
+                    if (!wifiManager.isConnected()) {
+                        Serial.println("[SYNC] Sin WiFi - Datos en buffer offline");
+                        displayManager.showMessage("Sin WiFi", "Modo offline");
+                        delay(2000);
+                        return;
+                    }
                 }
+            } else {
+                Serial.println("[SYNC] WiFi omitido por configuracion, simulando envio");
             }
             
             // Obtener datos locales + datos de esclavos
@@ -399,37 +421,39 @@ void loop() {
             }
             
             Serial.printf("\n[SYNC] ━━━━━ Sincronización con API (cada 1 min) ━━━━━\n");
-            Serial.printf("[SYNC] Zona local: %s (%s)\n", DEVICE_LOCATION, DEVICE_ID);
+            Serial.printf("[SYNC] Zona: %s | Sublocacion: %s (%s)\n", ZONE_NAME, DEVICE_LOCATION, DEVICE_ID);
             Serial.printf("[SYNC] Animales detectados (total): %d\n", allBeacons.size());
             
             displayManager.showMessage("Enviando API", "Espere...");
             alertManager.loaderOn();
             
-            DynamicJsonDocument payloadDoc(1024 + allBeacons.size() * 128);
+            DynamicJsonDocument payloadDoc(1024 + allBeacons.size() * 192);
             payloadDoc["device_id"] = DEVICE_ID;
-            payloadDoc["location"] = DEVICE_LOCATION;
-            payloadDoc["zone_type"] = zoneTypeToCode(CURRENT_ZONE_TYPE);
+            payloadDoc["zone_name"] = ZONE_NAME;
             payloadDoc["timestamp"] = static_cast<uint64_t>(now);
 
-            JsonArray animalsArray = payloadDoc.createNestedArray("animals");
+            JsonArray detectionsArray = payloadDoc.createNestedArray("detections");
 
             for (const auto& pair : allBeacons) {
                 const BeaconData& beacon = pair.second;
-                Serial.printf("[SYNC]   [ANIMAL] ID=%u, Dist=%.2fm, RSSI=%d dBm, Loc=%s\n",
+                
+                String detectedLoc = beacon.detectedLocation.length() > 0 
+                                     ? beacon.detectedLocation 
+                                     : String(DEVICE_LOCATION);
+                
+                Serial.printf("[SYNC]   [ANIMAL] TagID=%u, Dist=%.2fm, RSSI=%d dBm, Subloc=%s, Present=%s\n",
                              beacon.animalId, beacon.distance, beacon.rssi,
-                             beacon.detectedLocation.length() > 0 ? beacon.detectedLocation.c_str() : DEVICE_LOCATION);
+                             detectedLoc.c_str(),
+                             beacon.isPresent ? "SI" : "NO");
 
-                JsonObject animal = animalsArray.createNestedObject();
-                animal["tag_id"] = beacon.animalId;
-                animal["distance"] = beacon.distance;
-                animal["rssi"] = beacon.rssi;
-                animal["is_present"] = beacon.isPresent;
-                animal["timestamp"] = beacon.lastSeen;
-                if (beacon.detectedLocation.length() > 0) {
-                    animal["detected_location"] = beacon.detectedLocation;
-                } else {
-                    animal["detected_location"] = DEVICE_LOCATION;
-                }
+                JsonObject detection = detectionsArray.createNestedObject();
+                detection["tag_id"] = beacon.animalId;
+                detection["device_location"] = detectedLoc;
+                detection["distance"] = beacon.distance;
+                detection["rssi"] = beacon.rssi;
+                detection["is_present"] = beacon.isPresent;
+                detection["first_seen"] = beacon.firstSeen;
+                detection["last_seen"] = beacon.lastSeen;
             }
 
             String payload;
@@ -455,7 +479,7 @@ void loop() {
     
     // ==================== 4. MANTENIMIENTO ====================
     // Verificar periódicamente conexión WiFi
-    if(CURRENT_DEVICE_MODE == DEVICE_MASTER)
+    if(CURRENT_DEVICE_MODE == DEVICE_MASTER && ENABLE_WIFI_SYNC)
     {
         static unsigned long lastWifiCheck = 0;
         if (now - lastWifiCheck > 30000) {  // Cada 30 segundos

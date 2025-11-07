@@ -30,6 +30,7 @@ extern DeviceMode CURRENT_DEVICE_MODE;
 // ==================== ESP-NOW ====================
 constexpr int ESPNOW_CHANNEL = 1;
 constexpr int MAX_SLAVES = 10;
+constexpr unsigned long ESPNOW_SEND_INTERVAL = 30000;
 extern uint8_t MASTER_MAC_ADDRESS[6];
 
 // ==================== WiFi ====================
@@ -37,12 +38,9 @@ extern const char* WIFI_SSID;
 extern const char* WIFI_PASSWORD;          
 constexpr unsigned long WIFI_TIMEOUT = 20000;
 constexpr unsigned long WIFI_RETRY_INTERVAL = 300000;
-extern bool ENABLE_WIFI_SYNC; // Permite desactivar WiFi para simulación
-extern bool ENABLE_WIFI_PORTAL; // Activa el portal de configuracion por web
+constexpr bool ENABLE_WIFI_SYNC = true;
+constexpr bool ENABLE_WIFI_PORTAL = true;
 extern const char* CONFIG_PORTAL_PASSWORD;
-
-// ==================== ZONA GEOGRAFICA ====================
-extern const char* ZONE_NAME; // Nombre de la zona macro que agrupa a maestro/esclavos
 
 // ==================== API ====================
 extern const char* API_URL;
@@ -62,12 +60,8 @@ constexpr unsigned long SCAN_INTERVAL_ECO = 60000;
 constexpr int ANIMALS_CHANGE_THRESHOLD = 3;
 constexpr int STABLE_SCANS_FOR_ECO = 10;
 
-#define TARGET_COMPANY_ID 0x004C
+#define TARGET_COMPANY_ID 0x1234
 extern const char* BLE_DEVICE_NAME;
-
-// ==================== TIMINGS MAESTRO-ESCLAVO ====================
-constexpr unsigned long SLAVE_SEND_INTERVAL = 10000;
-constexpr unsigned long MASTER_SYNC_INTERVAL = 60000;
 
 // ==================== DISTANCIA POR RSSI ====================
 constexpr int RSSI_REFERENCE = -59;
@@ -76,7 +70,6 @@ constexpr float PATH_LOSS_EXPONENT = 2.0;
 constexpr float DISTANCE_NEAR = 2.0;
 constexpr float DISTANCE_MEDIUM = 5.0;
 constexpr float DISTANCE_FAR = 10.0;
-extern float PRESENCE_DISTANCE_THRESHOLD;
 
 // ==================== COMPORTAMIENTO ====================
 constexpr unsigned long MIN_TIME_EATING = 15;
@@ -121,8 +114,6 @@ struct BeaconData {
     bool isPresent;
     String detectedLocation;
 };
-
-extern std::map<uint32_t, BeaconData> slaveBeaconData;
 
 struct AnimalBehavior {
     uint32_t animalId;

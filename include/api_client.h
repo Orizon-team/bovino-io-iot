@@ -12,8 +12,6 @@ public:
     APIClient();
     bool initializeTimeSync();
     String getCurrentTimestamp();
-    bool checkDeviceRegistration(const char* deviceId);
-    bool registerDevice(const char* deviceId, const char* location, ZoneType zoneType);
 
 private:
     bool handleResponse(int httpCode, const String& response);

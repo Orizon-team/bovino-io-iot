@@ -12,20 +12,17 @@ public:
     ESPNowManager();
     bool initializeMaster();
     bool initializeSlave();
-    bool sendToMaster(const ESPNowMessage& message);
-    bool broadcastToSlaves(const ESPNowMessage& message);
-    void processReceivedData();
+    bool sendToMaster(const String& jsonMessage);
     std::vector<ESPNowMessage> getReceivedMessages();
     void clearReceivedMessages();
-    int getReceivedCount();
 
 private:
+    bool isMaster;
     std::vector<ESPNowMessage> receivedMessages;
-    bool isInitialized;
+    esp_now_peer_info_t masterPeerInfo;
     
-    static void onDataSent(const uint8_t *macAddr, esp_now_send_status_t status);
-    static void onDataRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen);
-    static ESPNowManager* instance;
+    static void onDataReceive(const uint8_t* mac, const uint8_t* data, int len);
+    bool addPeer(const uint8_t* macAddress);
 };
 
 extern ESPNowManager espNowManager;

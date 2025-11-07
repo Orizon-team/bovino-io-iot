@@ -1,140 +1,135 @@
 #include "espnow_manager.h"
+#include <ArduinoJson.h>
 
+// Instancia global
 ESPNowManager espNowManager;
-ESPNowManager* ESPNowManager::instance = nullptr;
 
-ESPNowManager::ESPNowManager() : isInitialized(false) {
-    instance = this;
+// Variable estática para almacenar mensajes recibidos
+static std::vector<ESPNowMessage> staticReceivedMessages;
+
+// Constructor
+ESPNowManager::ESPNowManager() : isMaster(false) {
 }
 
+// Callback para recibir datos
+void ESPNowManager::onDataReceive(const uint8_t* mac, const uint8_t* data, int len) {
+    if (len != sizeof(ESPNowMessage)) {
+        Serial.println("[ESP-NOW] Tamaño de mensaje incorrecto");
+        return;
+    }
+
+    ESPNowMessage msg;
+    memcpy(&msg, data, sizeof(ESPNowMessage));
+    staticReceivedMessages.push_back(msg);
+
+    Serial.printf("[ESP-NOW] Mensaje recibido de %02X:%02X:%02X:%02X:%02X:%02X\n",
+                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+// Inicializar como maestro
 bool ESPNowManager::initializeMaster() {
     Serial.println("[ESP-NOW] Inicializando como MAESTRO...");
     
-    WiFi.mode(WIFI_AP_STA);
+    WiFi.mode(WIFI_STA);
     
     if (esp_now_init() != ESP_OK) {
-        Serial.println("[ESP-NOW] [ERROR] Error al inicializar ESP-NOW");
+        Serial.println("[ESP-NOW] Error al inicializar ESP-NOW");
         return false;
     }
+
+    esp_now_register_recv_cb(onDataReceive);
     
-    esp_now_register_recv_cb(onDataRecv);
-    esp_now_register_send_cb(onDataSent);
-    
-    isInitialized = true;
-    Serial.println("[ESP-NOW] [SUCCESS] Maestro inicializado correctamente");
-    Serial.print("[ESP-NOW] MAC Address: ");
-    Serial.println(WiFi.macAddress());
+    isMaster = true;
+    Serial.println("[ESP-NOW] Maestro inicializado correctamente");
+    Serial.printf("[ESP-NOW] MAC Address: %s\n", WiFi.macAddress().c_str());
     
     return true;
 }
 
+// Inicializar como esclavo
 bool ESPNowManager::initializeSlave() {
     Serial.println("[ESP-NOW] Inicializando como ESCLAVO...");
     
     WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
     
     if (esp_now_init() != ESP_OK) {
-        Serial.println("[ESP-NOW] [ERROR] Error al inicializar ESP-NOW");
+        Serial.println("[ESP-NOW] Error al inicializar ESP-NOW");
+        return false;
+    }
+
+    // Agregar peer del maestro
+    if (!addPeer(MASTER_MAC_ADDRESS)) {
+        Serial.println("[ESP-NOW] Error al agregar maestro como peer");
         return false;
     }
     
-    esp_now_register_send_cb(onDataSent);
-    
-    esp_now_peer_info_t peerInfo = {};
-    memcpy(peerInfo.peer_addr, MASTER_MAC_ADDRESS, 6);
-    peerInfo.channel = ESPNOW_CHANNEL;
-    peerInfo.encrypt = false;
-    
-    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-        Serial.println("[ESP-NOW] [ERROR] Error al agregar maestro como peer");
-        return false;
-    }
-    
-    isInitialized = true;
-    Serial.println("[ESP-NOW] [SUCCESS] Esclavo inicializado correctamente");
-    Serial.print("[ESP-NOW] MAC Address: ");
-    Serial.println(WiFi.macAddress());
+    isMaster = false;
+    Serial.println("[ESP-NOW] Esclavo inicializado correctamente");
+    Serial.printf("[ESP-NOW] MAC Address: %s\n", WiFi.macAddress().c_str());
     Serial.printf("[ESP-NOW] Maestro configurado: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                 MASTER_MAC_ADDRESS[0], MASTER_MAC_ADDRESS[1], MASTER_MAC_ADDRESS[2],
-                 MASTER_MAC_ADDRESS[3], MASTER_MAC_ADDRESS[4], MASTER_MAC_ADDRESS[5]);
+                  MASTER_MAC_ADDRESS[0], MASTER_MAC_ADDRESS[1], MASTER_MAC_ADDRESS[2],
+                  MASTER_MAC_ADDRESS[3], MASTER_MAC_ADDRESS[4], MASTER_MAC_ADDRESS[5]);
     
     return true;
 }
 
-bool ESPNowManager::sendToMaster(const ESPNowMessage& message) {
-    if (!isInitialized) {
-        Serial.println("[ESP-NOW] [ERROR] ESP-NOW no inicializado");
+// Agregar peer
+bool ESPNowManager::addPeer(const uint8_t* macAddress) {
+    memcpy(masterPeerInfo.peer_addr, macAddress, 6);
+    masterPeerInfo.channel = ESPNOW_CHANNEL;
+    masterPeerInfo.encrypt = false;
+
+    if (esp_now_add_peer(&masterPeerInfo) != ESP_OK) {
         return false;
     }
     
-    esp_err_t result = esp_now_send(MASTER_MAC_ADDRESS, (uint8_t*)&message, sizeof(ESPNowMessage));
+    return true;
+}
+
+// Enviar mensaje al maestro (usado por esclavos)
+bool ESPNowManager::sendToMaster(const String& jsonMessage) {
+    if (isMaster) {
+        Serial.println("[ESP-NOW] Error: Un maestro no puede enviar al maestro");
+        return false;
+    }
+
+    // Parsear JSON y crear mensaje ESP-NOW
+    StaticJsonDocument<512> doc;
+    DeserializationError error = deserializeJson(doc, jsonMessage);
+    
+    if (error) {
+        Serial.println("[ESP-NOW] Error al parsear JSON");
+        return false;
+    }
+
+    ESPNowMessage msg;
+    strncpy(msg.deviceId, doc["device_id"] | "", sizeof(msg.deviceId) - 1);
+    strncpy(msg.location, doc["device_location"] | "", sizeof(msg.location) - 1);
+    msg.zoneType = doc["zone_type"] | 0;
+    msg.animalId = doc["animal_id"] | 0;
+    msg.rssi = doc["rssi"] | 0;
+    msg.distance = doc["distance"] | 0.0f;
+    msg.isPresent = doc["is_present"] | false;
+    msg.timestamp = millis();
+
+    esp_err_t result = esp_now_send(MASTER_MAC_ADDRESS, (uint8_t*)&msg, sizeof(msg));
     
     if (result == ESP_OK) {
-        Serial.printf("[ESP-NOW] [SUCCESS] Mensaje enviado a maestro (Animal ID: %u)\n", message.animalId);
+        Serial.println("[ESP-NOW] Mensaje enviado al maestro");
         return true;
     } else {
-        Serial.printf("[ESP-NOW] [ERROR] Error enviando mensaje: %d\n", result);
+        Serial.printf("[ESP-NOW] Error al enviar: %d\n", result);
         return false;
     }
 }
 
-bool ESPNowManager::broadcastToSlaves(const ESPNowMessage& message) {
-    if (!isInitialized) {
-        Serial.println("[ESP-NOW] [ERROR] ESP-NOW no inicializado");
-        return false;
-    }
-    
-    uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)&message, sizeof(ESPNowMessage));
-    
-    if (result == ESP_OK) {
-        Serial.println("[ESP-NOW] [SUCCESS] Mensaje broadcast enviado");
-        return true;
-    } else {
-        Serial.printf("[ESP-NOW] [ERROR] Error en broadcast: %d\n", result);
-        return false;
-    }
-}
-
-void ESPNowManager::processReceivedData() {
-    // Los datos se procesan en el callback onDataRecv
-}
-
+// Obtener mensajes recibidos
 std::vector<ESPNowMessage> ESPNowManager::getReceivedMessages() {
-    return receivedMessages;
+    std::vector<ESPNowMessage> messages = staticReceivedMessages;
+    return messages;
 }
 
+// Limpiar mensajes recibidos
 void ESPNowManager::clearReceivedMessages() {
-    receivedMessages.clear();
-}
-
-int ESPNowManager::getReceivedCount() {
-    return receivedMessages.size();
-}
-
-void ESPNowManager::onDataSent(const uint8_t *macAddr, esp_now_send_status_t status) {
-    Serial.print("[ESP-NOW] Estado de envío: ");
-    Serial.println(status == ESP_NOW_SEND_SUCCESS ? "[SUCCESS] Exito" : "[ERROR] Fallo");
-}
-
-void ESPNowManager::onDataRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
-    if (instance == nullptr) return;
-    
-    Serial.printf("[ESP-NOW] [INBOX] Mensaje recibido de %02X:%02X:%02X:%02X:%02X:%02X\n",
-                 macAddr[0], macAddr[1], macAddr[2], macAddr[3], macAddr[4], macAddr[5]);
-    
-    if (dataLen == sizeof(ESPNowMessage)) {
-        ESPNowMessage message;
-        memcpy(&message, data, sizeof(ESPNowMessage));
-        
-        instance->receivedMessages.push_back(message);
-        
-        Serial.printf("[ESP-NOW] [ANIMAL] Datos: Device=%s, Zona=%s, Animal ID=%u, RSSI=%d, Dist=%.2fm\n",
-                     message.deviceId, message.location, message.animalId, 
-                     message.rssi, message.distance);
-    } else {
-        Serial.printf("[ESP-NOW] [WARNING] Tamaño incorrecto: %d bytes (esperado %d)\n", 
-                     dataLen, sizeof(ESPNowMessage));
-    }
+    staticReceivedMessages.clear();
 }

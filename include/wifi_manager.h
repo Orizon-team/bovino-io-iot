@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <DNSServer.h>
 #include "config.h"
 
 class WiFiManager {
@@ -18,20 +19,26 @@ public:
     void disconnect();
     void loop();
     const String& getConfiguredSSID() const { return currentSSID; }
+    void stopConfigPortal();
+    void startConfigPortal();  // Hacerlo público
+    bool isPortalActive() const { return portalActive; }
+    int getConnectionAttempts() const { return connectionAttempts; }  // Nuevo método
 
 private:
     unsigned long lastConnectionAttempt;
     bool wasConnected;
     WebServer configServer;
+    DNSServer dnsServer;
     bool portalActive;
     bool pendingReconnect;
     unsigned long lastPortalAnnounce;
     unsigned long reconnectRequestTime;
     String currentSSID;
     String currentPassword;
+    int connectionAttempts;
+    
     void loadStoredCredentials();
     void saveCredentials(const String& ssid, const String& password);
-    void startConfigPortal();
     void setupPortalRoutes();
     String renderPortalPage(const String& statusMessage);
     bool attemptConnection(unsigned long timeout);

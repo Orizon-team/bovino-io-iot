@@ -76,6 +76,7 @@ constexpr float PATH_LOSS_EXPONENT = 2.0;
 constexpr float DISTANCE_NEAR = 2.0;
 constexpr float DISTANCE_MEDIUM = 5.0;
 constexpr float DISTANCE_FAR = 10.0;
+extern float PRESENCE_DISTANCE_THRESHOLD;
 
 // ==================== COMPORTAMIENTO ====================
 constexpr unsigned long MIN_TIME_EATING = 15;

@@ -350,7 +350,7 @@ void BLEScanner::processDevice(BLEAdvertisedDevice advertisedDevice) {
     float distance = calculateDistance(rssi);
     
     // Determinar si el animal está presente en la zona
-    bool isPresent = (distance >= 0 && distance <= DISTANCE_MEDIUM);
+    bool isPresent = (distance >= 0 && distance <= PRESENCE_DISTANCE_THRESHOLD);
     
     unsigned long currentTime = millis();
     

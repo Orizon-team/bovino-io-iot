@@ -9,6 +9,7 @@ bool ENABLE_WIFI_SYNC = true;
 bool ENABLE_WIFI_PORTAL = true;
 const char* CONFIG_PORTAL_PASSWORD = "bovinoiot";
 const char* ZONE_NAME = "Zona Centro";
+float PRESENCE_DISTANCE_THRESHOLD = 3.0f;
 
 // ==================== CONFIGURACIÓN API ====================
 const char* API_URL = "https://api-schoolguardian.onrender.com/api/livestock/zone-data";

@@ -389,16 +389,20 @@ void BLEScanner::processDevice(BLEAdvertisedDevice advertisedDevice) {
 
 uint32_t BLEScanner::extractAnimalId(std::string manufacturerData) {
     /**
-     * Formato manufacturer data del beacon:
-     * Bytes 0-1: Company ID
-     * Bytes 2-X: Payload con ID del animal
+     * Formato manufacturer data del beacon iBeacon:
+     * Bytes 0-1: Company ID (0x004C para Apple/iBeacon)
+     * Bytes 2-3: iBeacon prefix (0x02 0x15)
+     * Bytes 4-19: UUID (16 bytes)
+     * Bytes 20-21: Major (2 bytes, big-endian)
+     * Bytes 22-23: Minor (2 bytes, big-endian)
+     * Byte 24: TX Power
      * 
-     * Solo se aceptan beacons cuyo Company ID coincide con TARGET_COMPANY_ID (0x004C).
+     * Usamos Minor como tag_id único para identificar cada beacon.
      */
     
-    if (manufacturerData.length() < 6) {
-    Serial.printf("[BLE] [WARNING] Datos insuficientes: solo %d bytes\n", manufacturerData.length());
-        return 0;  // Datos insuficientes
+    if (manufacturerData.length() < 25) {
+        Serial.printf("[BLE] [WARNING] Datos insuficientes: solo %d bytes\n", manufacturerData.length());
+        return 0;
     }
     
     uint8_t* data = (uint8_t*)manufacturerData.data();
@@ -409,30 +413,26 @@ uint32_t BLEScanner::extractAnimalId(std::string manufacturerData) {
     
     Serial.printf("[BLE] [INSPECT] Analizando beacon: CompanyID=0x%04X, Length=%d\n", companyId, length);
     
-    // OPCIÓN 1: Aceptar el TARGET_COMPANY_ID configurado
     if (companyId == TARGET_COMPANY_ID) {
-    Serial.println("[BLE]   [OK] Company ID coincide con TARGET_COMPANY_ID");
+        Serial.println("[BLE]   [OK] Company ID coincide con TARGET_COMPANY_ID");
         
-        // Verificar que hay suficientes bytes para el ID
-        if (length < 11) {  // 2 (company) + 1 (type) + 8 (UUID) si es iBeacon
-            // Formato simple: Company ID + 4 bytes de Animal ID
-            if (length >= 6) {
-                uint32_t animalId = data[2] | (data[3] << 8) | (data[4] << 16) | (data[5] << 24);
-                Serial.printf("[BLE]   [OK] Formato simple: Animal ID=%u\n", animalId);
-                return animalId;
-            }
-        } else {
-            // Formato iBeacon completo: extraer ID desde posición específica
-            // iBeacon: 2 bytes company + 1 byte type + 1 byte length + 16 bytes UUID + 2 major + 2 minor
-            uint32_t animalId = data[2] | (data[3] << 8) | (data[4] << 16) | (data[5] << 24);
-            Serial.printf("[BLE]   [OK] Formato iBeacon: Animal ID=%u\n", animalId);
+        // Verificar formato iBeacon (0x02 0x15)
+        if (length >= 25 && data[2] == 0x02 && data[3] == 0x15) {
+            // Extraer Minor (bytes 22-23, big-endian)
+            uint16_t minor = (static_cast<uint16_t>(data[22]) << 8) | data[23];
+            uint32_t animalId = static_cast<uint32_t>(minor);
+            
+            Serial.printf("[BLE]   [OK] Formato iBeacon: Animal ID=%u (Minor=%u)\n", animalId, minor);
             return animalId;
+        } else {
+            Serial.println("[BLE]   [WARNING] No es formato iBeacon valido");
+            return 0;
         }
     }
     
     Serial.printf("[BLE]   [ERROR] Company ID 0x%04X no coincide (esperado: 0x%04X)\n", 
                  companyId, TARGET_COMPANY_ID);
-    return 0;  // No es nuestro beacon
+    return 0;
 }
 
 // ==================== Callback para Beacons Detectados ====================

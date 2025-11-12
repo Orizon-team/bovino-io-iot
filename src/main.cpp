@@ -68,6 +68,50 @@ void setup() {
     displayManager.showMessage("BovinoIOT v2.0", "Iniciando...");
     delay(2000);
     
+    // ==================== VERIFICAR CONFIGURACIÓN INICIAL ====================
+    // Inicializar WiFiManager para cargar configuración
+    wifiManager.begin();
+    
+    // ⚠️ DESCOMENTAR LA SIGUIENTE LÍNEA PARA RESETEAR TODA LA CONFIGURACIÓN
+    // (Útil para testing del portal de configuración)
+    wifiManager.clearAllConfig();
+    
+    // Verificar si el dispositivo está configurado
+    if (!wifiManager.isConfigured()) {
+        Serial.println("[INIT] ============================================");
+        Serial.println("[INIT] ⚠️  DISPOSITIVO NO CONFIGURADO");
+        Serial.println("[INIT] Abriendo portal de configuración...");
+        Serial.println("[INIT] ============================================");
+        
+        displayManager.showMessage("Sin Config", "Abriendo portal");
+        delay(1000);
+        
+        wifiManager.startConfigPortal();
+        
+        if (!wifiManager.isPortalActive()) {
+            Serial.println("[INIT] [ERROR] No se pudo activar el portal");
+            displayManager.showMessage("Error portal", "Reinicie ESP32");
+            while(1) { alertManager.showDanger(); delay(1000); }
+        }
+        
+        displayManager.showMessage("Portal Config", "192.168.4.1");
+        Serial.println("[INIT] ⏳ ESPERANDO configuración inicial...");
+        Serial.println("[INIT] 1. Conéctate a: BovinoIOT-" + String(DEVICE_ID));
+        Serial.println("[INIT] 2. Password: bovinoiot");
+        Serial.println("[INIT] 3. Abre: http://192.168.4.1");
+        Serial.println("[INIT] 4. Configura como MAESTRO o ESCLAVO");
+        Serial.println("[INIT] ============================================");
+        
+        // LOOP BLOQUEANTE - Esperar configuración
+        while (true) {
+            wifiManager.loop();
+            delay(100);
+            // El dispositivo se reiniciará automáticamente después de configurar
+        }
+    }
+    
+    Serial.println("[INIT] ✓ Dispositivo configurado previamente");
+    
     // Mostrar modo de operación
     const char* modeName = (CURRENT_DEVICE_MODE == DEVICE_MASTER) ? "MAESTRO" : "ESCLAVO";
     Serial.printf("[INIT] Modo: %s\n\n", modeName);
@@ -86,10 +130,7 @@ void setup() {
             Serial.println("[INIT] [OK] ESP-NOW maestro inicializado");
         }
         
-        // 2. Inicializar WiFiManager (carga credenciales)
-        wifiManager.begin();
-        
-        // 3. Intentar conectar WiFi (ENABLE_WIFI_SYNC controla si se usa WiFi)
+        // 2. Intentar conectar WiFi (ENABLE_WIFI_SYNC controla si se usa WiFi)
         bool wifiConnected = false;
         if (ENABLE_WIFI_SYNC) {
             Serial.println("[INIT] Conectando WiFi...");
@@ -415,12 +456,20 @@ void loop() {
                              beacon.animalId, beacon.distance, beacon.rssi);
             }
             
-            // TODO: apiClient.sendZoneData(beacons, behaviors);
+            // Enviar detecciones a la API
+            bool apiSuccess = apiClient.sendDetections(beacons);
             
             delay(500);
             alertManager.loaderOff();
-            alertManager.showSuccess();
-            displayManager.showMessage("Sincronizado", "OK!");
+            
+            if (apiSuccess) {
+                alertManager.showSuccess();
+                displayManager.showMessage("Sincronizado", "OK!");
+            } else {
+                alertManager.showError();
+                displayManager.showMessage("Error API", "Reintentando...");
+            }
+            
             delay(1500);
             
             Serial.println("[SYNC] ✓ Datos enviados al backend\n");
@@ -428,14 +477,16 @@ void loop() {
     }
     
     // ==================== 4. MANTENIMIENTO ====================
-    // Verificar periódicamente conexión WiFi
-    static unsigned long lastWifiCheck = 0;
-    if (now - lastWifiCheck > 30000) {  // Cada 30 segundos
-        lastWifiCheck = now;
-        
-        if (!wifiManager.isConnected()) {
-            Serial.println("[WiFi] Reconectando...");
-            wifiManager.reconnect();
+    // Verificar periódicamente conexión WiFi (SOLO MAESTRO)
+    if (CURRENT_DEVICE_MODE == DEVICE_MASTER) {
+        static unsigned long lastWifiCheck = 0;
+        if (now - lastWifiCheck > 30000) {  // Cada 30 segundos
+            lastWifiCheck = now;
+            
+            if (!wifiManager.isConnected()) {
+                Serial.println("[WiFi] Reconectando...");
+                wifiManager.reconnect();
+            }
         }
     }
     

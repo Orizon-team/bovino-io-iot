@@ -8,7 +8,7 @@ const char* WIFI_PASSWORD = "123456789";
 const char* CONFIG_PORTAL_PASSWORD = "bovinoiot";
 
 // ==================== CONFIGURACIÓN API ====================
-const char* API_URL = "https://api-schoolguardian.onrender.com/api/livestock/zone-data";
+const char* API_URL = "https://bovino-io-backend.onrender.com/detections/ingest";
 const char* API_KEY = "tu-api-key";
 
 // ==================== SERVIDORES NTP ====================
@@ -21,7 +21,7 @@ const char* DEVICE_LOCATION = "Comedero Norte";
 ZoneType CURRENT_ZONE_TYPE = ZONE_FEEDER;
 
 // ==================== MODO DISPOSITIVO ====================
-DeviceMode CURRENT_DEVICE_MODE = DEVICE_MASTER;
+DeviceMode CURRENT_DEVICE_MODE = DEVICE_SLAVE;  // Por defecto es ESCLAVO
 
 // ==================== ESP-NOW ====================
 uint8_t MASTER_MAC_ADDRESS[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};

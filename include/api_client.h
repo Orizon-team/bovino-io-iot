@@ -5,6 +5,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <vector>
+#include <map>
 #include "config.h"
 
 class APIClient {
@@ -12,8 +13,13 @@ public:
     APIClient();
     bool initializeTimeSync();
     String getCurrentTimestamp();
+    time_t getCurrentEpoch();
+    
+    // Envío de detecciones a la API real
+    bool sendDetections(const std::map<uint32_t, BeaconData>& beacons);
 
 private:
+    String createDetectionsPayload(const std::map<uint32_t, BeaconData>& beacons);
     bool handleResponse(int httpCode, const String& response);
     bool shouldRetry(int httpCode);
     unsigned long getRetryDelay(int httpCode);

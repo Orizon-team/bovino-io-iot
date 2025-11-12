@@ -35,6 +35,10 @@ bool APIClient::initializeTimeSync() {
     }
 }
 
+time_t APIClient::getCurrentEpoch() {
+    return time(NULL);
+}
+
 // ==================== Envío de Asistencias ====================
 // TODO: Refactorizar para sistema de ganado - Temporalmente deshabilitado
 /*
@@ -177,6 +181,8 @@ String APIClient::createPayload(const std::vector<BleData>& devices) {
     return payload;
 }
 
+*/
+
 // ==================== Timestamp Actual ====================
 String APIClient::getCurrentTimestamp() {
     time_t now = time(NULL);
@@ -232,4 +238,160 @@ unsigned long APIClient::getRetryDelay(int httpCode) {
             return 2000;  // 2 segundos por defecto
     }
 }
-*/
+
+// ==================== Envío de Detecciones (API Real) ====================
+bool APIClient::sendDetections(const std::map<uint32_t, BeaconData>& beacons) {
+    if (beacons.empty()) {
+        Serial.println("[API] No hay detecciones para enviar");
+        return false;
+    }
+
+    Serial.println("\n========================================");
+    Serial.printf("  Enviando %d Detecciones a la API\n", beacons.size());
+    Serial.println("========================================");
+
+    // Crear el payload JSON
+    String payload = createDetectionsPayload(beacons);
+    
+    Serial.println("[API] Payload:");
+    Serial.println(payload);
+
+    int attempt = 1;
+    bool success = false;
+
+    while (!success && attempt <= MAX_RETRY_ATTEMPTS) {
+        HTTPClient http;
+        http.setTimeout(HTTP_TIMEOUT);
+
+        Serial.printf("\n[API] Intento #%d - POST a: %s\n", attempt, API_URL);
+
+        alertManager.loaderOn();
+
+        // Iniciar conexión HTTP
+        if (!http.begin(API_URL)) {
+            Serial.println("[API] ❌ Error: No se pudo iniciar la conexión HTTP");
+            alertManager.loaderOff();
+            alertManager.showError();
+            delay(2000);
+            attempt++;
+            continue;
+        }
+
+        // Configurar headers
+        http.addHeader("Content-Type", "application/json");
+
+        // Enviar POST
+        int httpCode = http.POST(payload);
+        
+        alertManager.loaderOff();
+
+        if (httpCode > 0) {
+            String response = http.getString();
+            Serial.printf("[API] Código HTTP: %d\n", httpCode);
+            Serial.println("[API] Respuesta:");
+            Serial.println(response);
+
+            if (handleResponse(httpCode, response)) {
+                // Éxito
+                Serial.println("[API] ✓ Detecciones enviadas correctamente");
+                alertManager.showSuccess();
+                delay(1500);
+                success = true;
+            } 
+            else if (shouldRetry(httpCode)) {
+                // Error recuperable, reintentar
+                Serial.printf("[API] ⚠ Error %d - Reintentando...\n", httpCode);
+                alertManager.showError();
+                unsigned long retryDelay = getRetryDelay(httpCode);
+                delay(retryDelay);
+                attempt++;
+            } 
+            else {
+                // Error no recuperable
+                Serial.printf("[API] ❌ Error no recuperable: %d\n", httpCode);
+                alertManager.showError();
+                delay(3000);
+                break;
+            }
+        } 
+        else {
+            // Error de conexión
+            Serial.printf("[API] ❌ Error de conexión: %d\n", httpCode);
+            alertManager.showError();
+
+            if (httpCode == -11) {
+                // Conexión perdida, reconectar WiFi
+                Serial.println("[API] Reconectando WiFi...");
+                wifiManager.reconnect();
+            }
+
+            delay(2000);
+            attempt++;
+        }
+
+        http.end();
+    }
+
+    if (!success) {
+        Serial.println("[API] ⚠ No se pudieron enviar las detecciones después de todos los intentos");
+    }
+
+    return success;
+}
+
+// ==================== Creación de Payload de Detecciones ====================
+String APIClient::createDetectionsPayload(const std::map<uint32_t, BeaconData>& beacons) {
+    DynamicJsonDocument doc(2048);
+    
+    // Datos del dispositivo
+    doc["device_id"] = DEVICE_ID;
+    doc["zone_name"] = DEVICE_LOCATION;
+    
+    // Timestamp actual (epoch Unix)
+    time_t currentTime = getCurrentEpoch();
+    doc["timestamp"] = currentTime;
+
+    // Array de detecciones
+    JsonArray detections = doc.createNestedArray("detections");
+
+    for (const auto& entry : beacons) {
+        const BeaconData& beacon = entry.second;
+        
+        JsonObject detection = detections.createNestedObject();
+        
+        // ID del tag (animal)
+        detection["tag_id"] = beacon.animalId;
+        
+        // Ubicación del dispositivo
+        detection["device_location"] = DEVICE_LOCATION;
+        
+        // Distancia calculada
+        detection["distance"] = round(beacon.distance * 100.0) / 100.0;  // 2 decimales
+        
+        // RSSI
+        detection["rssi"] = beacon.rssi;
+        
+        // Estado de presencia
+        detection["is_present"] = beacon.isPresent;
+        
+        // Convertir millis a epoch Unix
+        // firstSeen y lastSeen están en millis(), necesitamos convertir a epoch
+        unsigned long millisNow = millis();
+        time_t baseTime = currentTime;
+        
+        // Calcular el tiempo transcurrido desde firstSeen
+        unsigned long millisSinceFirstSeen = millisNow - beacon.firstSeen;
+        time_t firstSeenEpoch = baseTime - (millisSinceFirstSeen / 1000);
+        
+        // Calcular el tiempo transcurrido desde lastSeen
+        unsigned long millisSinceLastSeen = millisNow - beacon.lastSeen;
+        time_t lastSeenEpoch = baseTime - (millisSinceLastSeen / 1000);
+        
+        detection["first_seen"] = firstSeenEpoch;
+        detection["last_seen"] = lastSeenEpoch;
+    }
+
+    String payload;
+    serializeJson(doc, payload);
+    return payload;
+}

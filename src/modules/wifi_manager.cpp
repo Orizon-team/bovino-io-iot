@@ -32,8 +32,9 @@ WiFiManager::WiFiManager()
 
 // ==================== Inicialización ====================
 void WiFiManager::begin() {
-    loadStoredCredentials();
-    loadDeviceConfig();  // Cargar configuración del dispositivo (modo y MAC)
+    loadDeviceConfig();        // ← PRIMERO: Cargar modo del dispositivo (MASTER/SLAVE)
+    loadDeviceLocation();      // ← SEGUNDO: Cargar ubicación (zona, sublocalización, device_id)
+    loadStoredCredentials();   // ← TERCERO: Cargar WiFi (solo si es MASTER)
     
     // NO iniciar portal automáticamente; solo si falla conexión
 }
@@ -260,6 +261,48 @@ void WiFiManager::loadDeviceConfig() {
     }
 }
 
+void WiFiManager::loadDeviceLocation() {
+    Preferences prefs;
+    if (prefs.begin("location_cfg", true)) {
+        // Cargar zona y sublocalización
+        LOADED_ZONE_NAME = prefs.getString("zone_name", "");
+        LOADED_SUB_LOCATION = prefs.getString("sub_location", "");
+        
+        if (LOADED_ZONE_NAME.length() > 0 && LOADED_SUB_LOCATION.length() > 0) {
+            // Generar DEVICE_ID desde sublocalización (formato: tipo/nombre)
+            // Ejemplo: "master/Corral Norte" -> "IOT_MASTER_CORRAL_NORTE"
+            String deviceType = "";
+            String locationName = LOADED_SUB_LOCATION;
+            
+            int slashPos = LOADED_SUB_LOCATION.indexOf('/');
+            if (slashPos > 0) {
+                deviceType = LOADED_SUB_LOCATION.substring(0, slashPos);
+                locationName = LOADED_SUB_LOCATION.substring(slashPos + 1);
+            }
+            
+            // Convertir a ID válido: mayúsculas, espacios -> guiones bajos
+            deviceType.toUpperCase();
+            locationName.toUpperCase();
+            locationName.replace(" ", "_");
+            locationName.replace("-", "_");
+            
+            LOADED_DEVICE_ID = "IOT_" + deviceType + "_" + locationName;
+            
+            Serial.printf("[Config] Ubicación cargada:\n");
+            Serial.printf("  - Zona: %s\n", LOADED_ZONE_NAME.c_str());
+            Serial.printf("  - Sublocalización: %s\n", LOADED_SUB_LOCATION.c_str());
+            Serial.printf("  - Device ID: %s\n", LOADED_DEVICE_ID.c_str());
+        } else {
+            Serial.println("[Config] No hay ubicación guardada, usando valores por defecto");
+            LOADED_ZONE_NAME = DEVICE_LOCATION;  // Usar valor hardcoded como fallback
+            LOADED_SUB_LOCATION = DEVICE_LOCATION;
+            LOADED_DEVICE_ID = DEVICE_ID;
+        }
+        
+        prefs.end();
+    }
+}
+
 void WiFiManager::saveDeviceConfig(DeviceMode mode, const String& masterMac) {
     Preferences prefs;
     if (prefs.begin("device_cfg", false)) {
@@ -362,20 +405,44 @@ void WiFiManager::clearAllConfig() {
 // ==================== GraphQL - Obtener Zonas ====================
 String WiFiManager::fetchZonesFromGraphQL(int userId) {
     Serial.printf("[GraphQL] Obteniendo zonas del usuario %d...\n", userId);
+    Serial.printf("[GraphQL] Memoria libre antes: %d bytes\n", ESP.getFreeHeap());
     
-    HTTPClient http;
-    http.setTimeout(10000);
-    
-    // URL de GraphQL
-    const char* graphqlUrl = "https://bovino-io-backend.onrender.com/graphql";
-    
-    if (!http.begin(graphqlUrl)) {
-        Serial.println("[GraphQL] Error: No se pudo iniciar conexión HTTPS");
+    // Verificar conexión WiFi
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[GraphQL] Error: WiFi no conectado");
         return "[]";
     }
     
-    // Preparar query GraphQL
-    String query = "{\"query\":\"query($userId:Int!){ zonesByUser(userId:$userId){ id name user{ id_user name } } }\",\"variables\":{\"userId\":" + String(userId) + "}}";
+    // Esperar estabilización
+    delay(1000);
+    
+    Serial.printf("[GraphQL] IP: %s\n", WiFi.localIP().toString().c_str());
+    
+    // Cliente WiFi seguro
+    WiFiClientSecure *client = new WiFiClientSecure();
+    if (!client) {
+        Serial.println("[GraphQL] Error: No se pudo crear cliente SSL");
+        return "[]";
+    }
+    
+    client->setInsecure();
+    client->setTimeout(20);
+    
+    HTTPClient http;
+    http.setTimeout(25000);
+    http.setReuse(false);
+    
+    const char* graphqlUrl = "https://bovino-io-backend.onrender.com/graphql";
+    
+    Serial.printf("[GraphQL] Conectando a: %s\n", graphqlUrl);
+    
+    if (!http.begin(*client, graphqlUrl)) {
+        Serial.println("[GraphQL] Error: No se pudo iniciar HTTPS");
+        delete client;
+        return "[]";
+    }
+    
+    String query = "{\"query\":\"query($userId:Int!){ zonesByUser(userId:$userId){ id name } }\",\"variables\":{\"userId\":" + String(userId) + "}}";
     
     http.addHeader("Content-Type", "application/json");
     
@@ -386,6 +453,7 @@ String WiFiManager::fetchZonesFromGraphQL(int userId) {
     if (httpCode > 0) {
         String response = http.getString();
         Serial.printf("[GraphQL] Respuesta HTTP: %d\n", httpCode);
+        Serial.printf("[GraphQL] Respuesta completa: %s\n", response.c_str());
         
         if (httpCode == 200) {
             // Parsear respuesta GraphQL
@@ -418,10 +486,115 @@ String WiFiManager::fetchZonesFromGraphQL(int userId) {
                             }
                         }
                         
+                        result = "";  // Limpiar el string antes de serializar
                         serializeJson(resultArray, result);
                         Serial.printf("[GraphQL] ✓ Zonas obtenidas: %d\n", zoneCount);
+                        Serial.printf("[GraphQL] JSON resultado: %s\n", result.c_str());
                     } else {
                         Serial.println("[GraphQL] Error: Campo 'zonesByUser' no encontrado");
+                    }
+                } else {
+                    Serial.println("[GraphQL] Error: Campo 'data' no encontrado");
+                }
+            } else {
+                Serial.printf("[GraphQL] Error JSON: %s\n", error.c_str());
+            }
+        } else {
+            Serial.printf("[GraphQL] Error HTTP: %d\n", httpCode);
+        }
+    } else {
+        Serial.printf("[GraphQL] Error de conexión: %d\n", httpCode);
+    }
+    
+    http.end();
+    delete client;
+    
+    Serial.printf("[GraphQL] Memoria libre después: %d bytes\n", ESP.getFreeHeap());
+    
+    return result;
+}
+
+// ==================== GraphQL - Obtener Sublocalidades por Zona ====================
+String WiFiManager::fetchSublocationsFromGraphQL(int zoneId) {
+    Serial.printf("[GraphQL] Obteniendo sublocalidades de la zona %d...\n", zoneId);
+    
+    // Verificar conexión WiFi
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[GraphQL] Error: WiFi no conectado");
+        return "[]";
+    }
+    
+    // Cliente WiFi seguro para HTTPS
+    WiFiClientSecure client;
+    client.setInsecure();  // Deshabilitar verificación SSL
+    client.setTimeout(15);  // 15 segundos timeout
+    
+    HTTPClient http;
+    http.setTimeout(20000);
+    http.setReuse(false);
+    
+    const char* graphqlUrl = "https://bovino-io-backend.onrender.com/graphql";
+    
+    if (!http.begin(client, graphqlUrl)) {
+        Serial.println("[GraphQL] Error: No se pudo iniciar conexión HTTPS");
+        return "[]";
+    }
+    
+    Serial.println("[GraphQL] Conexión HTTPS iniciada");
+    
+    // Query GraphQL para dispositivos por zona
+    String query = "{\"query\":\"query DevicesByZone($id_zone: Int!){ dispositivosByZone(id_zone: $id_zone){ id type location battery_level status zone { id name } } }\",\"variables\":{\"id_zone\":" + String(zoneId) + "}}";
+    
+    Serial.printf("[GraphQL] Query: %s\n", query.c_str());
+    
+    http.addHeader("Content-Type", "application/json");
+    
+    int httpCode = http.POST(query);
+    
+    String result = "[]";
+    
+    if (httpCode > 0) {
+        String response = http.getString();
+        Serial.printf("[GraphQL] Respuesta HTTP: %d\n", httpCode);
+        Serial.printf("[GraphQL] Respuesta completa: %s\n", response.c_str());
+        
+        if (httpCode == 200) {
+            const size_t capacity = JSON_ARRAY_SIZE(20) + JSON_OBJECT_SIZE(100);
+            DynamicJsonDocument doc(capacity);
+            DeserializationError error = deserializeJson(doc, response);
+            
+            if (!error) {
+                if (doc.containsKey("data")) {
+                    JsonObject dataObj = doc["data"];
+                    if (dataObj.containsKey("dispositivosByZone")) {
+                        JsonArray devices = dataObj["dispositivosByZone"];
+                        
+                        DynamicJsonDocument resultDoc(JSON_ARRAY_SIZE(20) + JSON_OBJECT_SIZE(50));
+                        JsonArray resultArray = resultDoc.createNestedArray();
+                        
+                        int deviceCount = 0;
+                        for (JsonVariant item : devices) {
+                            if (item.is<JsonObject>()) {
+                                JsonObject sublocObj = resultArray.createNestedObject();
+                                if (item.containsKey("id")) {
+                                    sublocObj["id"] = item["id"];
+                                }
+                                // Combinar type/location
+                                String sublocation = "";
+                                if (item.containsKey("type") && item.containsKey("location")) {
+                                    sublocation = String(item["type"].as<const char*>()) + "/" + String(item["location"].as<const char*>());
+                                    sublocObj["name"] = sublocation;
+                                }
+                                deviceCount++;
+                            }
+                        }
+                        
+                        result = "";
+                        serializeJson(resultArray, result);
+                        Serial.printf("[GraphQL] ✓ Sublocalidades obtenidas: %d\n", deviceCount);
+                        Serial.printf("[GraphQL] JSON resultado: %s\n", result.c_str());
+                    } else {
+                        Serial.println("[GraphQL] Error: Campo 'dispositivosByZone' no encontrado");
                     }
                 } else {
                     Serial.println("[GraphQL] Error: Campo 'data' no encontrado");
@@ -540,13 +713,120 @@ void WiFiManager::setupPortalRoutes() {
         configServer.send(200, "text/html", renderPortalPage(""));
     });
 
+    // Ruta para conectar WiFi y verificar conexión
+    configServer.on("/connectWifi", HTTP_POST, [this]() {
+        IPAddress clientIP = configServer.client().remoteIP();
+        Serial.printf("[Portal] POST /connectWifi desde %s\n", clientIP.toString().c_str());
+        
+        String ssid = configServer.arg("ssid");
+        String password = configServer.arg("password");
+        
+        ssid.trim();
+        password.trim();
+        
+        if (ssid.length() == 0) {
+            configServer.send(200, "application/json", "{\"success\":false,\"message\":\"SSID vacío\"}");
+            return;
+        }
+        
+        Serial.printf("[Portal] Intentando conectar a WiFi: %s\n", ssid.c_str());
+        
+        // Cambiar a modo DUAL (AP + STA) para conectar a WiFi externo
+        WiFi.mode(WIFI_AP_STA);
+        delay(100);
+        
+        // Conectar al WiFi externo
+        WiFi.begin(ssid.c_str(), password.c_str());
+        
+        // Esperar hasta 15 segundos por conexión
+        int attempts = 0;
+        while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+            delay(500);
+            Serial.print(".");
+            attempts++;
+        }
+        
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("\n[Portal] ✓ WiFi conectado exitosamente");
+            Serial.printf("[Portal] IP obtenida: %s\n", WiFi.localIP().toString().c_str());
+            
+            // ⚡ CRÍTICO: Dar tiempo para que la memoria se estabilice después de conectar WiFi
+            // El modo AP+STA causa fragmentación de memoria. Este delay permite que el heap
+            // se reorganice antes del primer request HTTPS/SSL que requiere memoria contigua
+            delay(1000);
+            
+            // Forzar garbage collection
+            Serial.printf("[Portal] Memoria libre post-WiFi: %d bytes\n", ESP.getFreeHeap());
+            
+            configServer.send(200, "application/json", "{\"success\":true,\"message\":\"WiFi conectado\",\"ip\":\"" + WiFi.localIP().toString() + "\"}");
+        } else {
+            Serial.println("\n[Portal] ✗ Error al conectar WiFi");
+            WiFi.disconnect();
+            WiFi.mode(WIFI_AP);  // Volver a modo AP puro
+            configServer.send(200, "application/json", "{\"success\":false,\"message\":\"No se pudo conectar al WiFi\"}");
+        }
+    });
+
     // Ruta para obtener zonas desde GraphQL
     configServer.on("/getZones", HTTP_GET, [this]() {
         IPAddress clientIP = configServer.client().remoteIP();
         Serial.printf("[Portal] GET /getZones desde %s\n", clientIP.toString().c_str());
         
+        // Verificar si WiFi está conectado
+        if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("[Portal] ✗ WiFi NO conectado. No se pueden obtener zonas.");
+            configServer.send(200, "application/json", "{\"zones\":[],\"error\":\"WiFi no conectado\"}");
+            return;
+        }
+        
+        Serial.printf("[Portal] ✓ WiFi conectado - IP: %s\n", WiFi.localIP().toString().c_str());
+        
+        // ⚡ CRÍTICO: Pequeño delay adicional para asegurar estabilidad de memoria
+        // antes de la primera llamada HTTPS que requiere ~8-12KB de heap contiguo
+        delay(500);
+        
+        Serial.println("[Portal] Llamando a fetchZonesFromGraphQL...");
+        
         String zonesJson = fetchZonesFromGraphQL(3);
-        configServer.send(200, "application/json", "{\"zones\":" + zonesJson + "}");
+        
+        Serial.printf("[Portal] Zonas JSON recibido (longitud: %d): %s\n", zonesJson.length(), zonesJson.c_str());
+        
+        String response = "{\"zones\":" + zonesJson + "}";
+        Serial.printf("[Portal] Enviando respuesta: %s\n", response.c_str());
+        
+        configServer.send(200, "application/json", response);
+    });
+
+    // Ruta para obtener sublocalidades por zona
+    configServer.on("/getSublocations", HTTP_GET, [this]() {
+        IPAddress clientIP = configServer.client().remoteIP();
+        Serial.printf("[Portal] GET /getSublocations desde %s\n", clientIP.toString().c_str());
+        
+        String zoneIdStr = configServer.arg("zone_id");
+        int zoneId = zoneIdStr.toInt();
+        
+        if (zoneId == 0) {
+            Serial.println("[Portal] ✗ zone_id inválido o no proporcionado");
+            configServer.send(200, "application/json", "{\"sublocations\":[],\"error\":\"zone_id requerido\"}");
+            return;
+        }
+        
+        if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("[Portal] ✗ WiFi NO conectado");
+            configServer.send(200, "application/json", "{\"sublocations\":[],\"error\":\"WiFi no conectado\"}");
+            return;
+        }
+        
+        Serial.printf("[Portal] ✓ Obteniendo sublocalidades para zona ID: %d\n", zoneId);
+        
+        String sublocationsJson = fetchSublocationsFromGraphQL(zoneId);
+        
+        Serial.printf("[Portal] Sublocalidades JSON (longitud: %d): %s\n", sublocationsJson.length(), sublocationsJson.c_str());
+        
+        String response = "{\"sublocations\":" + sublocationsJson + "}";
+        Serial.printf("[Portal] Enviando respuesta: %s\n", response.c_str());
+        
+        configServer.send(200, "application/json", response);
     });
 
     // Ruta para guardar configuración
@@ -555,15 +835,15 @@ void WiFiManager::setupPortalRoutes() {
         Serial.printf("[Portal] POST /save desde %s\n", clientIP.toString().c_str());
         
         String deviceMode = configServer.arg("device_mode");
-        String ssid = configServer.arg("ssid");
-        String password = configServer.arg("password");
+        String tempSSID = configServer.arg("temp_ssid");
+        String tempPassword = configServer.arg("temp_password");
         String masterMac = configServer.arg("master_mac");
         String zoneName = configServer.arg("zone_name");
         String subLocation = configServer.arg("sub_location");
 
         deviceMode.trim();
-        ssid.trim();
-        password.trim();
+        tempSSID.trim();
+        tempPassword.trim();
         masterMac.trim();
         zoneName.trim();
         subLocation.trim();
@@ -571,13 +851,13 @@ void WiFiManager::setupPortalRoutes() {
         // Validar zona y sublocalización (requeridas para TODOS)
         if (zoneName.length() == 0) {
             Serial.println("[Portal] Error: Zona requerida");
-            configServer.send(200, "text/html", renderPortalPage("Debes seleccionar una Zona."));
+            configServer.send(200, "text/html", renderPortalPage("❌ Debes seleccionar una Zona."));
             return;
         }
         
         if (subLocation.length() == 0) {
             Serial.println("[Portal] Error: Sublocalización requerida");
-            configServer.send(200, "text/html", renderPortalPage("Debes seleccionar una Sublocalización."));
+            configServer.send(200, "text/html", renderPortalPage("❌ Debes seleccionar una Sublocalización."));
             return;
         }
 
@@ -586,54 +866,59 @@ void WiFiManager::setupPortalRoutes() {
         
         // Validación según el modo
         if (mode == DEVICE_MASTER) {
-            // MAESTRO: requiere WiFi
-            if (ssid.length() == 0) {
+            // MAESTRO: Guardar WiFi persistentemente
+            if (tempSSID.length() == 0) {
                 Serial.println("[Portal] Error: MAESTRO requiere SSID");
-                configServer.send(200, "text/html", renderPortalPage("El modo MAESTRO requiere configurar WiFi."));
+                configServer.send(200, "text/html", renderPortalPage("❌ El modo MAESTRO requiere configurar WiFi."));
                 return;
             }
             
             Serial.printf("[Portal] Configurando MAESTRO\n");
-            Serial.printf("[Portal] WiFi SSID: %s\n", ssid.c_str());
+            Serial.printf("[Portal] WiFi SSID: %s (se guardará persistentemente)\n", tempSSID.c_str());
             Serial.printf("[Portal] Zona: %s, Sublocalización: %s\n", zoneName.c_str(), subLocation.c_str());
             
-            saveCredentials(ssid, password);
+            saveCredentials(tempSSID, tempPassword);  // GUARDAR WiFi para MAESTRO
             saveDeviceConfig(mode, "");  // MAESTRO no necesita MAC
             saveDeviceLocation(zoneName, subLocation);  // Guardar ubicación
             
-            String message = "✓ MAESTRO configurado<br>";
-            message += "WiFi: " + ssid + "<br>";
-            message += "Zona: " + zoneName + "<br>";
-            message += "El dispositivo se reiniciara...";
+            String message = "✅ MAESTRO configurado correctamente<br><br>";
+            message += "📶 WiFi: " + tempSSID + " (guardado)<br>";
+            message += "📍 Zona: " + zoneName + "<br>";
+            message += "📍 Sublocalidad: " + subLocation + "<br><br>";
+            message += "🔄 El dispositivo se reiniciará en 3 segundos...";
             
             configServer.send(200, "text/html", renderPortalPage(message));
             
-            delay(2000);
+            delay(3000);
             ESP.restart();  // Reiniciar para aplicar configuración
             
         } else {
-            // ESCLAVO: solo requiere MAC del maestro
+            // ESCLAVO: NO guardar WiFi (solo se usó temporalmente)
             if (masterMac.length() == 0 || masterMac.length() < 17) {
                 Serial.println("[Portal] Error: ESCLAVO requiere MAC del maestro");
-                configServer.send(200, "text/html", renderPortalPage("El modo ESCLAVO requiere la MAC del Maestro."));
+                configServer.send(200, "text/html", renderPortalPage("❌ El modo ESCLAVO requiere la MAC del Maestro."));
                 return;
             }
             
             Serial.printf("[Portal] Configurando ESCLAVO\n");
             Serial.printf("[Portal] MAC Maestro: %s\n", masterMac.c_str());
             Serial.printf("[Portal] Zona: %s, Sublocalización: %s\n", zoneName.c_str(), subLocation.c_str());
+            Serial.println("[Portal] WiFi NO se guardará (solo para configuración inicial)");
             
-            saveDeviceConfig(mode, masterMac);
+            // NO llamar saveCredentials() - El esclavo NO guarda WiFi
+            saveDeviceConfig(mode, masterMac);  // Guardar modo ESCLAVO + MAC del maestro
             saveDeviceLocation(zoneName, subLocation);  // Guardar ubicación
             
-            String message = "✓ ESCLAVO configurado<br>";
-            message += "MAC Maestro: " + masterMac + "<br>";
-            message += "Zona: " + zoneName + "<br>";
-            message += "El dispositivo se reiniciara...";
+            String message = "✅ ESCLAVO configurado correctamente<br><br>";
+            message += "📡 MAC Maestro: " + masterMac + "<br>";
+            message += "📍 Zona: " + zoneName + "<br>";
+            message += "📍 Sublocalidad: " + subLocation + "<br><br>";
+            message += "ℹ️ WiFi NO guardado (solo usado para configuración)<br>";
+            message += "🔄 El dispositivo se reiniciará en 3 segundos...";
             
             configServer.send(200, "text/html", renderPortalPage(message));
             
-            delay(2000);
+            delay(3000);
             ESP.restart();  // Reiniciar para aplicar configuración
         }
     });
@@ -717,122 +1002,240 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += ".help-text{font-size:12px;color:#888;margin-top:5px;font-style:italic;}";
     page += "</style>";
     page += "<script>";
-    page += "var subLocations=['Bebedero Norte','Bebedero Sur','Comedero Este','Comedero Oeste','Área de Descanso','Zona de Pastoreo'];";
-    page += "function toggleFields(){";
-    page += "var mode=document.querySelector('input[name=\"device_mode\"]:checked').value;";
-    page += "var wifiSection=document.getElementById('wifi_section');";
-    page += "var macSection=document.getElementById('mac_section');";
-    page += "var macDisplay=document.getElementById('mac_display_section');";
-    page += "if(mode=='master'){";
-    page += "wifiSection.classList.remove('hidden');";
-    page += "macSection.classList.add('hidden');";
-    page += "macDisplay.classList.remove('hidden');";
-    page += "document.getElementById('ssid').required=true;";
-    page += "document.getElementById('master_mac').required=false;";
-    page += "}else{";
-    page += "wifiSection.classList.add('hidden');";
-    page += "macSection.classList.remove('hidden');";
-    page += "macDisplay.classList.add('hidden');";
-    page += "document.getElementById('ssid').required=false;";
-    page += "document.getElementById('master_mac').required=true;";
-    page += "}}";
-    page += "async function loadZones(){";
-    page += "var zoneSelect=document.getElementById('zone_name');";
-    page += "if(!zoneSelect)return;";
-    page += "zoneSelect.innerHTML='<option value=\"\">Cargando zonas...</option>';";
+    page += "var currentStep=1;";
+    page += "var wifiSSID='';";
+    page += "var wifiPassword='';";
+    page += "var selectedZoneId=null;";
+    page += "function showStep(step){";
+    page += "document.getElementById('step1').classList.add('hidden');";
+    page += "document.getElementById('step2').classList.add('hidden');";
+    page += "document.getElementById('step3').classList.add('hidden');";
+    page += "document.getElementById('step'+step).classList.remove('hidden');";
+    page += "currentStep=step;";
+    page += "}";
+    page += "async function connectWifi(){";
+    page += "var ssid=document.getElementById('ssid').value;";
+    page += "var password=document.getElementById('password').value;";
+    page += "if(!ssid){alert('Ingresa el SSID del WiFi');return;}";
+    page += "wifiSSID=ssid;";
+    page += "wifiPassword=password;";
+    page += "document.getElementById('connect_btn').disabled=true;";
+    page += "document.getElementById('connect_btn').innerText='⏳ Conectando...';";
     page += "try{";
-    page += "var response=await fetch('/getZones');";
-    page += "if(!response.ok){throw new Error('Error al cargar zonas');}";
+    page += "var response=await fetch('/connectWifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ssid='+encodeURIComponent(ssid)+'&password='+encodeURIComponent(password)});";
     page += "var data=await response.json();";
-    page += "zoneSelect.innerHTML='<option value=\"\">-- Selecciona una Zona --</option>';";
-    page += "if(data.zones && Array.isArray(data.zones)){";
-    page += "data.zones.forEach(function(zone){";
-    page += "var option=document.createElement('option');";
-    page += "option.value=zone.id;";
-    page += "option.textContent=zone.name;";
-    page += "zoneSelect.appendChild(option);";
-    page += "});";
+    page += "if(data.success){";
+    page += "document.getElementById('wifi_status').innerHTML='<div style=\"color:green;font-weight:bold;margin:10px 0;\">✓ WiFi Conectado - IP: '+data.ip+'</div>';";
+    page += "await loadZones();";
+    page += "showStep(2);";
+    page += "}else{";
+    page += "alert('❌ Error al conectar WiFi: '+data.message);";
+    page += "document.getElementById('connect_btn').disabled=false;";
+    page += "document.getElementById('connect_btn').innerText='🔌 Conectar WiFi';";
     page += "}";
     page += "}catch(error){";
-    page += "console.error('Error:',error);";
-    page += "zoneSelect.innerHTML='<option value=\"\">-- Error al cargar zonas --</option>';";
-    page += "}}";
-    page += "function populateSublocations(){";
-    page += "var subSelect=document.getElementById('sub_location');";
-    page += "subSelect.innerHTML='<option value=\"\">-- Selecciona una Sublocalidad --</option>';";
-    page += "subLocations.forEach(function(subLoc){";
-    page += "var option=document.createElement('option');";
-    page += "option.value=subLoc;";
-    page += "option.textContent=subLoc;";
-    page += "subSelect.appendChild(option);";
-    page += "});";
+    page += "alert('❌ Error de conexión: '+error.message);";
+    page += "document.getElementById('connect_btn').disabled=false;";
+    page += "document.getElementById('connect_btn').innerText='🔌 Conectar WiFi';";
     page += "}";
-    page += "window.onload=function(){toggleFields();loadZones();populateSublocations();};";
+    page += "}";
+    page += "function selectDeviceMode(){";
+    page += "var mode=document.querySelector('input[name=\"device_mode\"]:checked').value;";
+    page += "if(mode=='master'){";
+    page += "document.getElementById('master_fields').classList.remove('hidden');";
+    page += "document.getElementById('slave_fields').classList.add('hidden');";
+    page += "}else{";
+    page += "document.getElementById('master_fields').classList.add('hidden');";
+    page += "document.getElementById('slave_fields').classList.remove('hidden');";
+    page += "}";
+    page += "showStep(3);";
+    page += "}";
+    page += "async function loadZones(){";
+    page += "var zoneSelect=document.getElementById('zone_name_master');";
+    page += "var zoneSelectSlave=document.getElementById('zone_name_slave');";
+    page += "if(zoneSelect)zoneSelect.innerHTML='<option value=\"\">⏳ Cargando zonas...</option>';";
+    page += "if(zoneSelectSlave)zoneSelectSlave.innerHTML='<option value=\"\">⏳ Cargando zonas...</option>';";
+    page += "try{";
+    page += "var response=await fetch('/getZones');";
+    page += "if(!response.ok){throw new Error('Error HTTP '+response.status);}";
+    page += "var data=await response.json();";
+    page += "console.log('Respuesta /getZones:',data);";
+    page += "var optionsHTML='<option value=\"\">-- Selecciona una Zona --</option>';";
+    page += "if(data.zones && Array.isArray(data.zones) && data.zones.length>0){";
+    page += "data.zones.forEach(function(zone){";
+    page += "if(zone.name && zone.id){";
+    page += "optionsHTML+='<option value=\"'+zone.name+'\" data-zone-id=\"'+zone.id+'\">'+zone.name+'</option>';";
+    page += "}";
+    page += "});";
+    page += "console.log('✓ Zonas cargadas:',data.zones.length);";
+    page += "}else{";
+    page += "console.warn('⚠️ No hay zonas');";
+    page += "optionsHTML='<option value=\"\">-- No hay zonas disponibles --</option>';";
+    page += "}";
+    page += "if(zoneSelect){zoneSelect.innerHTML=optionsHTML;zoneSelect.onchange=function(){onZoneChangeMaster();};}";
+    page += "if(zoneSelectSlave){zoneSelectSlave.innerHTML=optionsHTML;zoneSelectSlave.onchange=function(){onZoneChangeSlave();};}";
+    page += "}catch(error){";
+    page += "console.error('❌ Error loadZones:',error);";
+    page += "var errorHTML='<option value=\"\">-- Error: '+error.message+'</option>';";
+    page += "if(zoneSelect)zoneSelect.innerHTML=errorHTML;";
+    page += "if(zoneSelectSlave)zoneSelectSlave.innerHTML=errorHTML;";
+    page += "}";
+    page += "}";
+    page += "async function loadSublocations(zoneId,isMaster){";
+    page += "var subSelectMaster=document.getElementById('sub_location_master');";
+    page += "var subSelectSlave=document.getElementById('sub_location_slave');";
+    page += "var targetSelect=isMaster?subSelectMaster:subSelectSlave;";
+    page += "if(targetSelect)targetSelect.innerHTML='<option value=\"\">⏳ Cargando sublocalidades...</option>';";
+    page += "try{";
+    page += "var response=await fetch('/getSublocations?zone_id='+zoneId);";
+    page += "if(!response.ok){throw new Error('Error HTTP '+response.status);}";
+    page += "var data=await response.json();";
+    page += "console.log('Respuesta /getSublocations:',data);";
+    page += "var optionsHTML='<option value=\"\">-- Selecciona una Sublocalidad --</option>';";
+    page += "if(data.sublocations && Array.isArray(data.sublocations) && data.sublocations.length>0){";
+    page += "data.sublocations.forEach(function(subloc){";
+    page += "if(subloc.name){";
+    page += "optionsHTML+='<option value=\"'+subloc.name+'\">'+subloc.name+'</option>';";
+    page += "}";
+    page += "});";
+    page += "console.log('✓ Sublocalidades cargadas:',data.sublocations.length);";
+    page += "}else{";
+    page += "console.warn('⚠️ No hay dispositivos');";
+    page += "optionsHTML='<option value=\"\">-- No hay dispositivos en esta zona --</option>';";
+    page += "}";
+    page += "if(targetSelect)targetSelect.innerHTML=optionsHTML;";
+    page += "}catch(error){";
+    page += "console.error('❌ Error loadSublocations:',error);";
+    page += "var errorHTML='<option value=\"\">-- Error: '+error.message+'</option>';";
+    page += "if(targetSelect)targetSelect.innerHTML=errorHTML;";
+    page += "}";
+    page += "}";
+    page += "function onZoneChangeMaster(){";
+    page += "var zoneSelect=document.getElementById('zone_name_master');";
+    page += "var selectedOption=zoneSelect.options[zoneSelect.selectedIndex];";
+    page += "var zoneId=selectedOption.getAttribute('data-zone-id');";
+    page += "if(zoneId){";
+    page += "console.log('Zona seleccionada (Master):',zoneId);";
+    page += "loadSublocations(zoneId,true);";
+    page += "}";
+    page += "}";
+    page += "function onZoneChangeSlave(){";
+    page += "var zoneSelect=document.getElementById('zone_name_slave');";
+    page += "var selectedOption=zoneSelect.options[zoneSelect.selectedIndex];";
+    page += "var zoneId=selectedOption.getAttribute('data-zone-id');";
+    page += "if(zoneId){";
+    page += "console.log('Zona seleccionada (Slave):',zoneId);";
+    page += "loadSublocations(zoneId,false);";
+    page += "}";
+    page += "}";
+    page += "function prepareSubmit(isMaster){";
+    page += "var form=document.getElementById(isMaster?'form_master':'form_slave');";
+    page += "var hiddenSSID=document.createElement('input');";
+    page += "hiddenSSID.type='hidden';";
+    page += "hiddenSSID.name='temp_ssid';";
+    page += "hiddenSSID.value=wifiSSID;";
+    page += "form.appendChild(hiddenSSID);";
+    page += "var hiddenPass=document.createElement('input');";
+    page += "hiddenPass.type='hidden';";
+    page += "hiddenPass.name='temp_password';";
+    page += "hiddenPass.value=wifiPassword;";
+    page += "form.appendChild(hiddenPass);";
+    page += "return true;";
+    page += "}";
     page += "</script>";
     page += "</head><body>";
     page += "<div class='container'>";
     page += "<h1>BovinoIOT</h1>";
     page += "<p>Configuración Inicial del Dispositivo</p>";
-    page += "<form method='POST' action='/save'>";
     
-    // Device Mode Selection
+    // PASO 1: Conexión WiFi (TODOS)
+    page += "<div id='step1'>";
     page += "<div class='section'>";
-    page += "<div class='section-title'>Selecciona el Modo del Dispositivo</div>";
+    page += "<div class='section-title'>Paso 1: Conectar a WiFi</div>";
+    page += "<p class='help-text'>⚠️ Necesitas WiFi temporalmente para obtener las zonas del servidor</p>";
+    page += "<label for='ssid'>Nombre de Red WiFi (SSID)</label>";
+    page += "<input type='text' id='ssid' maxlength='32' placeholder='Mi_Red_WiFi'>";
+    page += "<label for='password'>Contraseña WiFi</label>";
+    page += "<input type='password' id='password' maxlength='64' placeholder='Dejar vacío si es red abierta'>";
+    page += "<div id='wifi_status'></div>";
+    page += "<button type='button' id='connect_btn' onclick='connectWifi()'>🔌 Conectar WiFi</button>";
+    page += "</div>";
+    page += "</div>";
+    
+    // PASO 2: Selección de tipo de dispositivo
+    page += "<div id='step2' class='hidden'>";
+    page += "<div class='section'>";
+    page += "<div class='section-title'>Paso 2: Selecciona el Tipo de Dispositivo</div>";
     page += "<div class='radio-group'>";
     page += "<div class='radio-option'>";
-    page += "<input type='radio' id='mode_slave' name='device_mode' value='slave' checked onchange='toggleFields()'>";
-    page += "<label for='mode_slave'>📡 Esclavo</label>";
-    page += "</div>";
-    page += "<div class='radio-option'>";
-    page += "<input type='radio' id='mode_master' name='device_mode' value='master' onchange='toggleFields()'>";
+    page += "<input type='radio' id='mode_master' name='device_mode' value='master' checked>";
     page += "<label for='mode_master'>🌐 Maestro</label>";
     page += "</div>";
+    page += "<div class='radio-option'>";
+    page += "<input type='radio' id='mode_slave' name='device_mode' value='slave'>";
+    page += "<label for='mode_slave'>📡 Esclavo</label>";
+    page += "</div>";
+    page += "</div>";
+    page += "<p class='help-text'>El Maestro usa WiFi y envía datos al servidor. Los Esclavos solo se comunican con el Maestro vía ESP-NOW.</p>";
+    page += "<button type='button' onclick='selectDeviceMode()'>➡️ Continuar</button>";
     page += "</div>";
     page += "</div>";
     
-    // WiFi Section (solo MAESTRO)
-    page += "<div id='wifi_section' class='section hidden'>";
-    page += "<div class='section-title'>Configuración WiFi (Maestro)</div>";
-    page += "<label for='ssid'>Nombre de Red WiFi (SSID)</label>";
-    page += "<input type='text' id='ssid' name='ssid' maxlength='32' placeholder='Mi_Red_WiFi'>";
-    page += "<label for='password'>Contraseña WiFi</label>";
-    page += "<input type='password' id='password' name='password' maxlength='64' placeholder='Dejar vacío si es red abierta'>";
-    page += "<p class='help-text'>El maestro necesita WiFi para sincronizar datos con el servidor</p>";
-    page += "</div>";
+    // PASO 3: Configuración específica (por defecto muestra MAESTRO)
+    page += "<div id='step3' class='hidden'>";
     
-    // MAC Display (solo MAESTRO)
-    page += "<div id='mac_display_section' class='section hidden'>";
-    page += "<div class='section-title'>MAC de este Dispositivo Maestro</div>";
+    // MAESTRO (visible por defecto porque mode_master está checked)
+    page += "<div id='master_fields'>";
+    page += "<form id='form_master' method='POST' action='/save' onsubmit='return prepareSubmit(true)'>";
+    page += "<input type='hidden' name='device_mode' value='master'>";
+    page += "<div class='section'>";
+    page += "<div class='section-title'>🌐 Configuración del Maestro</div>";
     page += "<div class='mac-display'>" + localMacStr + "</div>";
-    page += "<p class='help-text'>⚠️ Copia esta MAC y úsala en los dispositivos esclavos</p>";
+    page += "<p class='help-text'>⚠️ Esta es tu MAC. Cópiala para configurar los esclavos.</p>";
     page += "</div>";
-    
-    // MAC Input Section (solo ESCLAVO)
-    page += "<div id='mac_section' class='section'>";
-    page += "<div class='section-title'>Configuración del Esclavo</div>";
-    page += "<label for='master_mac'>MAC del Dispositivo Maestro</label>";
-    page += "<input type='text' id='master_mac' name='master_mac' maxlength='17' ";
-    page += "placeholder='AA:BB:CC:DD:EE:FF' pattern='[A-Fa-f0-9:]{17}'>";
-    page += "<p class='help-text'>Ingresa la MAC del dispositivo maestro configurado</p>";
-    page += "</div>";
-    
-    // Location Selection (AMBOS: Maestro y Esclavo)
     page += "<div class='section'>";
     page += "<div class='section-title'>📍 Ubicación del Dispositivo</div>";
-    page += "<label for='zone_name'>Zona</label>";
-    page += "<select id='zone_name' name='zone_name' required>";
-    page += "<option value=''>Cargando zonas...</option>";
+    page += "<label for='zone_name_master'>Zona</label>";
+    page += "<select id='zone_name_master' name='zone_name' required>";
+    page += "<option value=''>-- Selecciona una Zona --</option>";
     page += "</select>";
-    page += "<p class='help-text'>Selecciona la zona donde se encuentra el dispositivo</p>";
-    page += "<label for='sub_location'>Sublocalidad</label>";
-    page += "<select id='sub_location' name='sub_location' required>";
+    page += "<label for='sub_location_master'>Sublocalidad</label>";
+    page += "<select id='sub_location_master' name='sub_location' required>";
     page += "<option value=''>-- Selecciona una Sublocalidad --</option>";
     page += "</select>";
-    page += "<p class='help-text'>Ej: Bebedero Norte, Comedero Este, etc.</p>";
     page += "</div>";
-    
     page += "<button type='submit'>💾 Guardar y Reiniciar</button>";
     page += "</form>";
+    page += "</div>";
+    
+    // ESCLAVO (oculto por defecto)
+    page += "<div id='slave_fields' class='hidden'>";
+    page += "<form id='form_slave' method='POST' action='/save' onsubmit='return prepareSubmit(false)'>";
+    page += "<input type='hidden' name='device_mode' value='slave'>";
+    page += "<div class='section'>";
+    page += "<div class='section-title'>📡 Configuración del Esclavo</div>";
+    page += "<label for='master_mac'>MAC del Dispositivo Maestro</label>";
+    page += "<input type='text' id='master_mac' name='master_mac' maxlength='17' ";
+    page += "placeholder='AA:BB:CC:DD:EE:FF' pattern='[A-Fa-f0-9:]{17}' required>";
+    page += "<p class='help-text'>Ingresa la MAC del dispositivo maestro ya configurado</p>";
+    page += "</div>";
+    page += "<div class='section'>";
+    page += "<div class='section-title'>📍 Ubicación del Dispositivo</div>";
+    page += "<label for='zone_name_slave'>Zona</label>";
+    page += "<select id='zone_name_slave' name='zone_name' required>";
+    page += "<option value=''>-- Selecciona una Zona --</option>";
+    page += "</select>";
+    page += "<label for='sub_location_slave'>Sublocalidad</label>";
+    page += "<select id='sub_location_slave' name='sub_location' required>";
+    page += "<option value=''>-- Selecciona una Sublocalidad --</option>";
+    page += "</select>";
+    page += "</div>";
+    page += "<button type='submit'>💾 Guardar y Reiniciar</button>";
+    page += "</form>";
+    page += "</div>";
+    page += "</div>";
+    page += "</div>";
+    page += "</div>";
 
     if (message.length() > 0) {
         page += "<div class='status'>" + message + "</div>";

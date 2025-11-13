@@ -343,9 +343,11 @@ bool APIClient::sendDetections(const std::map<uint32_t, BeaconData>& beacons) {
 String APIClient::createDetectionsPayload(const std::map<uint32_t, BeaconData>& beacons) {
     DynamicJsonDocument doc(2048);
     
-    // Datos del dispositivo
-    doc["device_id"] = DEVICE_ID;
-    doc["zone_name"] = DEVICE_LOCATION;
+    // Datos del dispositivo - usar valores cargados si están disponibles
+    String currentDeviceId = LOADED_DEVICE_ID.length() > 0 ? LOADED_DEVICE_ID : DEVICE_ID;
+    String currentZoneName = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
+    doc["device_id"] = currentDeviceId;
+    doc["zone_name"] = currentZoneName;
     
     // Timestamp actual (epoch Unix)
     time_t currentTime = getCurrentEpoch();
@@ -362,8 +364,9 @@ String APIClient::createDetectionsPayload(const std::map<uint32_t, BeaconData>& 
         // ID del tag (animal)
         detection["tag_id"] = beacon.animalId;
         
-        // Ubicación del dispositivo
-        detection["device_location"] = DEVICE_LOCATION;
+        // Ubicación del dispositivo - usar valor cargado si está disponible
+        String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
+        detection["device_location"] = currentLocation;
         
         // Distancia calculada
         detection["distance"] = round(beacon.distance * 100.0) / 100.0;  // 2 decimales

@@ -16,7 +16,8 @@ void displayZoneStatus() {
     int animalCount = bleScanner.getAnimalCount();
     
     // Línea 1: Nombre de la zona y conteo
-    String line1 = String(DEVICE_LOCATION);
+    String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
+    String line1 = String(currentLocation);
     if (line1.length() > 10) {
         line1 = line1.substring(0, 10);  // Truncar si es muy largo
     }
@@ -47,8 +48,10 @@ void setup() {
     Serial.println();
     
     // Mostrar información de la zona
-    Serial.printf("Zona: %s\n", DEVICE_LOCATION);
-    Serial.printf("ID: %s\n", DEVICE_ID);
+    String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
+    String currentDeviceId = LOADED_DEVICE_ID.length() > 0 ? LOADED_DEVICE_ID : DEVICE_ID;
+    Serial.printf("Zona: %s\n", currentLocation.c_str());
+    Serial.printf("ID: %s\n", currentDeviceId.c_str());
     
     const char* zoneTypeName = "";
     switch (CURRENT_ZONE_TYPE) {
@@ -64,6 +67,9 @@ void setup() {
     alertManager.initialize();
     alertManager.loaderOn();
     
+    // Inicializar botón de reset
+    initResetButton();
+    
     displayManager.initialize();
     displayManager.showMessage("BovinoIOT v2.0", "Iniciando...");
     delay(2000);
@@ -74,7 +80,7 @@ void setup() {
     
     // ⚠️ DESCOMENTAR LA SIGUIENTE LÍNEA PARA RESETEAR TODA LA CONFIGURACIÓN
     // (Útil para testing del portal de configuración)
-    wifiManager.clearAllConfig();
+    // wifiManager.clearAllConfig();
     
     // Verificar si el dispositivo está configurado
     if (!wifiManager.isConfigured()) {
@@ -326,7 +332,31 @@ void loop() {
     
     unsigned long now = millis();
 
-    // ==================== 0. MANTENER PORTAL ACTIVO (SOLO MAESTRO) ====================
+    // ==================== 0. VERIFICAR BOTÓN DE RESET ====================
+    // CRÍTICO: Verificar ANTES de cualquier otra operación
+    if (checkResetButton()) {
+        // Botón presionado por 3+ segundos
+        Serial.println("\n[RESET] ╔════════════════════════════════════════╗");
+        Serial.println("[RESET] ║  🔴 RESETEO DE CONFIGURACIÓN        ║");
+        Serial.println("[RESET] ╚════════════════════════════════════════╝");
+        
+        displayManager.showMessage("RESETEANDO", "Espere...");
+        alertManager.showDanger();
+        
+        // Borrar TODA la configuración
+        wifiManager.clearAllConfig();
+        
+        Serial.println("[RESET] ✓ Configuración borrada");
+        Serial.println("[RESET] 🔄 Reiniciando ESP32...");
+        
+        displayManager.showMessage("Config borrada", "Reiniciando...");
+        delay(2000);
+        
+        // Reiniciar el ESP32
+        ESP.restart();
+    }
+
+    // ==================== 1. MANTENER PORTAL ACTIVO (SOLO MAESTRO) ====================
     if (CURRENT_DEVICE_MODE == DEVICE_MASTER) {
         wifiManager.loop(); // Procesar peticiones del portal si está activo
     }
@@ -372,8 +402,10 @@ void loop() {
                     
                     // Crear JSON para enviar al maestro
                     StaticJsonDocument<256> doc;
-                    doc["device_id"] = DEVICE_ID;
-                    doc["device_location"] = DEVICE_LOCATION;
+                    String currentDeviceId = LOADED_DEVICE_ID.length() > 0 ? LOADED_DEVICE_ID : DEVICE_ID;
+                    String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
+                    doc["device_id"] = currentDeviceId;
+                    doc["device_location"] = currentLocation;
                     doc["zone_type"] = CURRENT_ZONE_TYPE;
                     doc["animal_id"] = beacon.animalId;
                     doc["rssi"] = beacon.rssi;
@@ -444,7 +476,9 @@ void loop() {
             }
             
             Serial.printf("\n[SYNC] ━━━━━ Sincronización ━━━━━\n");
-            Serial.printf("[SYNC] Zona local: %s (%s)\n", DEVICE_LOCATION, DEVICE_ID);
+            String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
+            String currentDeviceId = LOADED_DEVICE_ID.length() > 0 ? LOADED_DEVICE_ID : DEVICE_ID;
+            Serial.printf("[SYNC] Zona local: %s (%s)\n", currentLocation.c_str(), currentDeviceId.c_str());
             Serial.printf("[SYNC] Animales detectados localmente: %d\n", beacons.size());
             
             displayManager.showMessage("Sincronizando", "Espere...");

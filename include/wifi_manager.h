@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <HTTPClient.h>
@@ -28,6 +29,7 @@ public:
     bool isConfigured();  // Verificar si está configurado (WiFi para MASTER, MAC para SLAVE)
     void clearAllConfig();  // Limpiar toda la configuración
     String fetchZonesFromGraphQL(int userId);  // Obtener zonas desde GraphQL como JSON
+    String fetchSublocationsFromGraphQL(int zoneId);  // Obtener sublocalidades por zona
     String saveDeviceLocation(const String& zoneName, const String& subLocation);  // Guardar ubicación
 
 private:
@@ -46,6 +48,7 @@ private:
     void loadStoredCredentials();
     void saveCredentials(const String& ssid, const String& password);
     void loadDeviceConfig();
+    void loadDeviceLocation();
     void saveDeviceConfig(DeviceMode mode, const String& masterMac);
     void setupPortalRoutes();
     String renderPortalPage(const String& statusMessage);

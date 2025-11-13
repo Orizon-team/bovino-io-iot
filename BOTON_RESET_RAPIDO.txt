@@ -1,0 +1,33 @@
+# ⚡ CONEXIÓN RÁPIDA - Botón Reset
+
+## 🔌 Conecta Solo 2 Cables
+
+```
+     ESP32                    BOTÓN
+   ┌────────┐              ┌────────┐
+   │        │              │        │
+   │ GPIO27 ├──────────────┤   1    │
+   │        │   Cable 1    │        │
+   │        │              │        │
+   │  GND   ├──────────────┤   2    │
+   │        │   Cable 2    │        │
+   └────────┘              └────────┘
+```
+
+## ✅ Instrucciones
+1. Cable 1: GPIO 27 → Terminal 1 del botón
+2. Cable 2: GND → Terminal 2 del botón
+3. ¡Listo!
+
+## 🎯 Cómo Usar
+1. **Mantén presionado** el botón **3 segundos**
+2. Verás en LCD: `"RESETEANDO"`
+3. El ESP32 se reinicia automáticamente
+4. Se abre el portal de configuración
+
+## 📝 No Necesitas Resistencias
+El código usa el pull-up interno del ESP32.
+
+---
+
+**¿Dudas?** Lee el archivo completo: `CONEXION_BOTON_RESET.md`

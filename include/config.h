@@ -9,6 +9,11 @@
 extern const char* DEVICE_ID;
 extern const char* DEVICE_LOCATION;
 
+// Variables globales para ubicación cargada desde Preferences
+extern String LOADED_ZONE_NAME;
+extern String LOADED_SUB_LOCATION;
+extern String LOADED_DEVICE_ID;
+
 enum ZoneType {
     ZONE_FEEDER,
     ZONE_WATERER,
@@ -86,6 +91,11 @@ constexpr int LED_SUCCESS = 26;
 constexpr int LED_ERROR = 25;
 constexpr int ZUMBADOR = 15;
 
+// Botón de reseteo de configuración
+constexpr int RESET_BUTTON = 27;  // Pin GPIO27 para botón de reset
+constexpr unsigned long RESET_BUTTON_HOLD_TIME = 3000;  // 3 segundos presionado
+constexpr unsigned long DEBOUNCE_DELAY = 50;  // Anti-rebote 50ms
+
 constexpr int LCD_SDA = 21;
 constexpr int LCD_SCL = 22;
 constexpr uint8_t LCD_I2C_ADDR = 0x27;
@@ -137,5 +147,9 @@ struct ESPNowMessage {
     bool isPresent;
     unsigned long timestamp;
 };
+
+// ==================== RESET BUTTON FUNCTIONS ====================
+void initResetButton();
+bool checkResetButton();
 
 #endif // CONFIG_H

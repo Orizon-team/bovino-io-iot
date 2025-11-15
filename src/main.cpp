@@ -170,6 +170,14 @@ void setup() {
                 alertManager.showSuccess();
                 delay(1000);
                 apiClient.initializeTimeSync();
+                
+                // ⚡ CRÍTICO: Cerrar portal para liberar memoria RAM
+                if (wifiManager.isPortalActive()) {
+                    Serial.println("[INIT] Cerrando portal de configuración para liberar memoria...");
+                    wifiManager.stopConfigPortal();
+                    delay(500);
+                    Serial.printf("[INIT] Memoria libre después de cerrar portal: %d bytes\n", ESP.getFreeHeap());
+                }
             } else {
                 // Falló después de 3 intentos
                 Serial.printf("[INIT] [ERROR] WiFi falló después de %d intentos\n", MAX_ATTEMPTS);
@@ -357,11 +365,15 @@ void loop() {
     }
 
     // ==================== 1. MANTENER PORTAL ACTIVO (SOLO MAESTRO) ====================
+    // ⚡ DESHABILITADO: El portal consume mucha RAM, se cierra después de configurar
+    // Si necesitas reconfigurar, usa el botón de reset o descomenta la siguiente línea
+    /*
     if (CURRENT_DEVICE_MODE == DEVICE_MASTER) {
         wifiManager.loop(); // Procesar peticiones del portal si está activo
     }
+    */
     
-    // ==================== 1. ESCANEO ADAPTATIVO ====================
+    // ==================== 2. ESCANEO ADAPTATIVO ====================
     // El scanner maneja internamente los intervalos según el modo (ACTIVE/NORMAL/ECO)
     bleScanner.performScan();
     

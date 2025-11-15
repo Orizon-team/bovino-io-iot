@@ -260,10 +260,20 @@ bool APIClient::sendDetections(const std::map<uint32_t, BeaconData>& beacons) {
     bool success = false;
 
     while (!success && attempt <= MAX_RETRY_ATTEMPTS) {
+        // ⚡ CRÍTICO: Liberar memoria antes de cada intento HTTPS
+        Serial.printf("\n[API] Intento #%d/%d\n", attempt, MAX_RETRY_ATTEMPTS);
+        Serial.printf("[API] Memoria libre: %d bytes\n", ESP.getFreeHeap());
+        
+        // Forzar garbage collection
+        if (attempt > 1) {
+            Serial.println("[API] Esperando estabilización de heap...");
+            delay(2000);
+        }
+        
         HTTPClient http;
         http.setTimeout(HTTP_TIMEOUT);
 
-        Serial.printf("\n[API] Intento #%d - POST a: %s\n", attempt, API_URL);
+        Serial.printf("[API] POST a: %s\n", API_URL);
 
         alertManager.loaderOn();
 
@@ -277,11 +287,21 @@ bool APIClient::sendDetections(const std::map<uint32_t, BeaconData>& beacons) {
             continue;
         }
 
+        // ⚡ CRÍTICO: Dar tiempo para estabilización de memoria antes de HTTPS
+        if (attempt > 1) {
+            Serial.println("[API] Esperando estabilización de memoria...");
+            delay(2000);  // Dar tiempo para que el heap se reorganice
+        }
+        
+        Serial.printf("[API] Memoria libre antes de HTTP: %d bytes\n", ESP.getFreeHeap());
+        
         // Configurar headers
         http.addHeader("Content-Type", "application/json");
 
         // Enviar POST
         int httpCode = http.POST(payload);
+        
+        Serial.printf("[API] Memoria libre después de HTTP: %d bytes\n", ESP.getFreeHeap());
         
         alertManager.loaderOff();
 
@@ -316,13 +336,15 @@ bool APIClient::sendDetections(const std::map<uint32_t, BeaconData>& beacons) {
         } 
         else {
             // Error de conexión
-            Serial.printf("[API] ❌ Error de conexión: %d\n", httpCode);
+            Serial.printf("[API] ❌ Error de conexión: %d (Memoria: %d bytes)\n", 
+                         httpCode, ESP.getFreeHeap());
             alertManager.showError();
 
             if (httpCode == -11) {
-                // Conexión perdida, reconectar WiFi
-                Serial.println("[API] Reconectando WiFi...");
+                // Error SSL - Memoria insuficiente o timeout
+                Serial.println("[API] ⚠️ Error SSL/TLS - Reconectando WiFi y liberando memoria...");
                 wifiManager.reconnect();
+                delay(3000);  // Tiempo extra para estabilización
             }
 
             delay(2000);
@@ -341,7 +363,8 @@ bool APIClient::sendDetections(const std::map<uint32_t, BeaconData>& beacons) {
 
 // ==================== Creación de Payload de Detecciones ====================
 String APIClient::createDetectionsPayload(const std::map<uint32_t, BeaconData>& beacons) {
-    DynamicJsonDocument doc(2048);
+    // ⚡ OPTIMIZACIÓN: Reducir tamaño del documento para evitar error -11
+    DynamicJsonDocument doc(1536);  // Reducido de 2048 a 1536 bytes
     
     // Datos del dispositivo - usar valores cargados si están disponibles
     String currentDeviceId = LOADED_DEVICE_ID.length() > 0 ? LOADED_DEVICE_ID : DEVICE_ID;

@@ -65,7 +65,48 @@ constexpr unsigned long SCAN_INTERVAL_ECO = 60000;
 constexpr int ANIMALS_CHANGE_THRESHOLD = 3;
 constexpr int STABLE_SCANS_FOR_ECO = 10;
 
-#define TARGET_COMPANY_ID 0x1234
+// ==================== FILTROS BLE ====================
+// ⚡ FILTRADO POR UUID DE iBeacon (para FEASYBeacon y similares)
+
+// UUID de tus beacons iBeacon (UUID por defecto de Feasybeacon)
+// TODOS tus 3 beacons tienen el mismo UUID, por lo que el sistema solo procesará
+// beacons con este UUID específico, ignorando cualquier otro dispositivo BLE
+#define BEACON_UUID_1 "FDA50693-A4E2-4FB1-AFCF-C6EB07647825"  // ✓ UUID de tus Feasybeacons
+#define BEACON_UUID_2 "00000000-0000-0000-0000-000000000000"  // UUID adicional (opcional)
+#define BEACON_UUID_3 "00000000-0000-0000-0000-000000000000"  // UUID adicional (opcional)
+
+// Prefijo MAC de tus beacons (alternativa si no usas UUID)
+// Ejemplo: dc:0d:30:2c:e8 para FEASYBeacon
+#define BEACON_MAC_PREFIX "dc:0d:30:2c:e8"  // ⬅️ CAMBIA ESTO si tus beacons tienen otro prefijo
+
+// Longitud mínima de RSSI para considerar beacon válido (-100 a 0)
+constexpr int MIN_RSSI_THRESHOLD = -90;  // Ignora beacons muy débiles
+
+// Company ID (para referencia, FEASYBeacon usa 0x004C que es Apple)
+#define TARGET_COMPANY_ID 0x004C
+
+// ==================== MODO DE FILTRADO ====================
+// Elige el método de filtrado:
+enum BeaconFilterMode {
+    FILTER_BY_UUID,          // Filtrar por UUID de iBeacon (RECOMENDADO para FEASYBeacon con Company ID 0x004C)
+    FILTER_BY_MAC_PREFIX,    // Filtrar por prefijo de dirección MAC
+    FILTER_BY_NAME_PREFIX,   // Filtrar por prefijo del nombre del dispositivo
+    FILTER_BY_COMPANY_ID,    // Filtrar por Company ID (solo si todos usan un ID personalizado)
+    FILTER_DISABLED          // Sin filtro - acepta TODOS los beacons (solo para debug)
+};
+
+constexpr BeaconFilterMode BEACON_FILTER_MODE = FILTER_BY_UUID;  // ← CAMBIAR AQUÍ
+
+// Método para extraer ID del animal desde el beacon iBeacon:
+enum AnimalIdSource {
+    USE_MAJOR_MINOR,         // Combinar Major (16 bits) + Minor (16 bits) = 32 bits
+    USE_MAJOR_ONLY,          // Solo usar Major como ID (0-65535)
+    USE_MINOR_ONLY,          // Solo usar Minor como ID (0-65535)
+    USE_MAC_ADDRESS          // Usar dirección MAC como ID (fallback)
+};
+
+constexpr AnimalIdSource ANIMAL_ID_SOURCE = USE_MAJOR_MINOR;  // ← CAMBIAR AQUÍ
+
 extern const char* BLE_DEVICE_NAME;
 
 // ==================== DISTANCIA POR RSSI ====================

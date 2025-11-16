@@ -202,17 +202,22 @@ void BLEScanner::checkMissingAnimals() {
         AnimalBehavior& behavior = pair.second;
         uint32_t animalId = pair.first;
         
-        // Buscar beacon correspondiente
-        if (beacons.find(animalId) != beacons.end()) {
-            BeaconData& beacon = beacons[animalId];
-            unsigned long timeSinceLastSeen = currentTime - beacon.lastSeen;
-            
-            // Si ha pasado mucho tiempo sin ver al animal
-            if (timeSinceLastSeen > ANIMAL_MISSING_TIMEOUT && !behavior.missingAlert) {
-                behavior.missingAlert = true;
-                behavior.isPresent = false;
-                Serial.printf("[BLE] ⚠️ ALERTA: Animal ID=%u no detectado hace %lu horas\n",
-                             animalId, timeSinceLastSeen / 3600000);
+        // Buscar beacon correspondiente en el mapa (puede haber múltiples con diferentes MACs)
+        bool found = false;
+        for (const auto& beaconPair : beacons) {
+            const BeaconData& beacon = beaconPair.second;
+            if (beacon.animalId == animalId) {
+                unsigned long timeSinceLastSeen = currentTime - beacon.lastSeen;
+                
+                // Si ha pasado mucho tiempo sin ver al animal
+                if (timeSinceLastSeen > ANIMAL_MISSING_TIMEOUT && !behavior.missingAlert) {
+                    behavior.missingAlert = true;
+                    behavior.isPresent = false;
+                    Serial.printf("[BLE] ⚠️ ALERTA: Animal ID=%u no detectado hace %lu horas\n",
+                                 animalId, timeSinceLastSeen / 3600000);
+                }
+                found = true;
+                break;  // Ya encontramos el beacon de este animal
             }
         }
     }
@@ -269,7 +274,7 @@ std::vector<uint32_t> BLEScanner::getMissingAnimals() {
     return missingAnimals;
 }
 
-std::map<uint32_t, BeaconData> BLEScanner::getBeaconData() {
+std::map<String, BeaconData> BLEScanner::getBeaconData() {
     return beacons;
 }
 
@@ -367,8 +372,12 @@ void BLEScanner::processDevice(BLEAdvertisedDevice advertisedDevice) {
     String mac = advertisedDevice.getAddress().toString().c_str();
     int8_t rssi = advertisedDevice.getRSSI();
     
+    // 🔍 DEBUG: Mostrar TODOS los dispositivos detectados (temporal)
+    Serial.printf("[BLE] 🔍 Dispositivo detectado: MAC=%s, RSSI=%d dBm\n", mac.c_str(), rssi);
+    
     // ==================== FILTRO 1: RSSI MÍNIMO ====================
     if (rssi < MIN_RSSI_THRESHOLD) {
+        Serial.printf("[BLE]   ❌ RSSI muy débil (< %d dBm), ignorado\n", MIN_RSSI_THRESHOLD);
         return;  // Señal muy débil, ignorar
     }
     
@@ -483,6 +492,9 @@ void BLEScanner::processDevice(BLEAdvertisedDevice advertisedDevice) {
     Serial.printf("[BLE] [DETECTADO] MAC=%s, RSSI=%d dBm", mac.c_str(), rssi);
     
     uint32_t animalId = 0;
+    String beaconUUID = "";
+    uint16_t beaconMajor = 0;
+    uint16_t beaconMinor = 0;
     
     // OPCIÓN 1: Intentar extraer de manufacturer data
     if (advertisedDevice.haveManufacturerData()) {
@@ -494,6 +506,23 @@ void BLEScanner::processDevice(BLEAdvertisedDevice advertisedDevice) {
         if (length >= 2) {
             uint16_t companyId = data[0] | (data[1] << 8);
             Serial.printf(", CompanyID=0x%04X, Bytes=%d", companyId, length);
+            
+            // Si es iBeacon (0x004C + tipo 0x02), extraer UUID, Major y Minor
+            if (companyId == 0x004C && length >= 25 && data[2] == 0x02 && data[3] == 0x15) {
+                // Extraer UUID (bytes 4-19)
+                for (int i = 4; i < 20; i++) {
+                    if (beaconUUID.length() > 0 && (i == 8 || i == 10 || i == 12 || i == 14)) {
+                        beaconUUID += "-";
+                    }
+                    char hex[3];
+                    sprintf(hex, "%02X", data[i]);
+                    beaconUUID += hex;
+                }
+                
+                // Extraer Major y Minor
+                beaconMajor = (data[20] << 8) | data[21];
+                beaconMinor = (data[22] << 8) | data[23];
+            }
         }
         
         // Extraer ID del animal desde manufacturer data
@@ -533,25 +562,34 @@ void BLEScanner::processDevice(BLEAdvertisedDevice advertisedDevice) {
     
     unsigned long currentTime = millis();
     
+    // Crear clave única: MAC + AnimalID para soportar múltiples iBeacons por MAC
+    String beaconKey = mac + "_" + String(animalId);
+    
     // Actualizar o crear datos del beacon
-    if (beacons.find(animalId) == beacons.end()) {
+    if (beacons.find(beaconKey) == beacons.end()) {
         // Nuevo beacon detectado
         BeaconData newBeacon;
         newBeacon.animalId = animalId;
-        newBeacon.macAddress = advertisedDevice.getAddress().toString().c_str();
+        newBeacon.macAddress = mac;
+        newBeacon.uuid = beaconUUID;
+        newBeacon.major = beaconMajor;
+        newBeacon.minor = beaconMinor;
         newBeacon.rssi = rssi;
         newBeacon.distance = distance;
         newBeacon.firstSeen = currentTime;
         newBeacon.lastSeen = currentTime;
         newBeacon.isPresent = isPresent;
         
-        beacons[animalId] = newBeacon;
+        beacons[beaconKey] = newBeacon;
         
-        Serial.printf("[BLE] 📡 Beacon: ID=%u, RSSI=%d dBm, Dist=%.2fm, MAC=%s\n",
-                     animalId, rssi, distance, newBeacon.macAddress.c_str());
+        Serial.printf("[BLE] 📡 Beacon: ID=%u (Major=%u,Minor=%u), RSSI=%d dBm, Dist=%.2fm, MAC=%s\n",
+                     animalId, beaconMajor, beaconMinor, rssi, distance, mac.c_str());
+        Serial.printf("[BLE] 🔑 Clave única: %s\n", beaconKey.c_str());
+        Serial.printf("[BLE] [VACA DETECTADA] Nuevo animal detectado: ID=%u, Distancia=%.2fm\n",
+                     animalId, distance);
     } else {
         // Beacon existente - actualizar
-        BeaconData& beacon = beacons[animalId];
+        BeaconData& beacon = beacons[beaconKey];
         beacon.rssi = rssi;
         beacon.distance = distance;
         beacon.lastSeen = currentTime;
@@ -559,7 +597,7 @@ void BLEScanner::processDevice(BLEAdvertisedDevice advertisedDevice) {
     }
     
     // Actualizar análisis de comportamiento
-    updateBehavior(animalId, beacons[animalId]);
+    updateBehavior(animalId, beacons[beaconKey]);
 }
 
 uint32_t BLEScanner::extractAnimalId(std::string manufacturerData) {

@@ -5,192 +5,167 @@
 #include <map>
 #include <vector>
 
-// ==================== DISPOSITIVO IOT (ZONA) ====================
-extern const char* DEVICE_ID;
-extern const char* DEVICE_LOCATION;
+extern const char* DEVICE_ID;          // ID único del dispositivo ESP32
+extern const char* DEVICE_LOCATION;    // Nombre de la zona (Comedero, Bebedero, etc.)
 
-// Variables globales para ubicación cargada desde Preferences
-extern String LOADED_ZONE_NAME;
-extern String LOADED_SUB_LOCATION;
-extern String LOADED_DEVICE_ID;
+extern String LOADED_ZONE_NAME;        // Zona cargada desde NVS
+extern String LOADED_SUB_LOCATION;     // Sub-localidad cargada desde NVS
+extern String LOADED_DEVICE_ID;        // ID cargado desde NVS
 
 enum ZoneType {
-    ZONE_FEEDER,
-    ZONE_WATERER,
-    ZONE_PASTURE,
-    ZONE_REST,
-    ZONE_GENERIC
+    ZONE_FEEDER,     // Zona de alimentación
+    ZONE_WATERER,    // Zona de bebedero
+    ZONE_PASTURE,    // Zona de pastoreo
+    ZONE_REST,       // Zona de descanso
+    ZONE_GENERIC     // Zona genérica
 };
 
-extern ZoneType CURRENT_ZONE_TYPE;
+extern ZoneType CURRENT_ZONE_TYPE;     // Tipo de zona configurada
 
-// ==================== MODO DISPOSITIVO ====================
 enum DeviceMode {
-    DEVICE_MASTER,
-    DEVICE_SLAVE
+    DEVICE_MASTER,   // Maestro: conecta WiFi y envía datos a backend
+    DEVICE_SLAVE     // Esclavo: envía datos al maestro vía ESP-NOW
 };
 
-extern DeviceMode CURRENT_DEVICE_MODE;
+extern DeviceMode CURRENT_DEVICE_MODE; // Modo de operación del dispositivo
 
-// ==================== ESP-NOW ====================
-constexpr int ESPNOW_CHANNEL = 1;
-constexpr int MAX_SLAVES = 10;
-constexpr unsigned long ESPNOW_SEND_INTERVAL = 30000;
-extern uint8_t MASTER_MAC_ADDRESS[6];
+constexpr int ESPNOW_CHANNEL = 1;                           // Canal WiFi para ESP-NOW
+constexpr int MAX_SLAVES = 10;                              // Máx. esclavos que puede gestionar un maestro
+constexpr unsigned long ESPNOW_SEND_INTERVAL = 30000;       // Intervalo de envío esclavo→maestro (ms)
+extern uint8_t MASTER_MAC_ADDRESS[6];                       // Dirección MAC del maestro
 
-// ==================== WiFi ====================
-extern const char* WIFI_SSID;              
-extern const char* WIFI_PASSWORD;          
-constexpr unsigned long WIFI_TIMEOUT = 20000;
-constexpr unsigned long WIFI_RETRY_INTERVAL = 300000;
-constexpr bool ENABLE_WIFI_SYNC = true;
-constexpr bool ENABLE_WIFI_PORTAL = true;
-extern const char* CONFIG_PORTAL_PASSWORD;
+extern const char* WIFI_SSID;                               // SSID de la red WiFi
+extern const char* WIFI_PASSWORD;                           // Contraseña WiFi
+constexpr unsigned long WIFI_TIMEOUT = 20000;               // Timeout de conexión WiFi (ms)
+constexpr unsigned long WIFI_RETRY_INTERVAL = 300000;       // Intervalo entre reintentos WiFi (ms)
+constexpr bool ENABLE_WIFI_SYNC = true;                     // Habilitar sincronización WiFi en maestro
+constexpr bool ENABLE_WIFI_PORTAL = true;                   // Habilitar portal de configuración
+extern const char* CONFIG_PORTAL_PASSWORD;                  // Contraseña del portal de config
 
-// ==================== API ====================
-extern const char* API_URL;
-extern const char* API_KEY;                
-constexpr int HTTP_TIMEOUT = 15000;        
-constexpr int MAX_RETRY_ATTEMPTS = 3;
+extern const char* API_URL;                                 // URL del backend API
+extern const char* API_KEY;                                 // API key para autenticación
+constexpr int HTTP_TIMEOUT = 15000;                         // Timeout HTTP (ms)
+constexpr int MAX_RETRY_ATTEMPTS = 3;                       // Máx. reintentos en fallos HTTP
 
-// ==================== BLE - ESCANEO ADAPTATIVO ====================
-constexpr int SCAN_DURATION_ACTIVE = 3;
-constexpr int SCAN_DURATION_NORMAL = 5;
-constexpr int SCAN_DURATION_ECO = 8;
+constexpr int SCAN_DURATION_ACTIVE = 3;                     // Duración escaneo BLE en modo activo (s)
+constexpr int SCAN_DURATION_NORMAL = 5;                     // Duración escaneo BLE en modo normal (s)
+constexpr int SCAN_DURATION_ECO = 8;                        // Duración escaneo BLE en modo eco (s)
 
-constexpr unsigned long SCAN_INTERVAL_ACTIVE = 10000;
-constexpr unsigned long SCAN_INTERVAL_NORMAL = 30000;
-constexpr unsigned long SCAN_INTERVAL_ECO = 60000;
+constexpr unsigned long SCAN_INTERVAL_ACTIVE = 10000;       // Intervalo entre escaneos en modo activo (ms)
+constexpr unsigned long SCAN_INTERVAL_NORMAL = 30000;       // Intervalo entre escaneos en modo normal (ms)
+constexpr unsigned long SCAN_INTERVAL_ECO = 60000;          // Intervalo entre escaneos en modo eco (ms)
 
-constexpr int ANIMALS_CHANGE_THRESHOLD = 3;
-constexpr int STABLE_SCANS_FOR_ECO = 10;
+constexpr int ANIMALS_CHANGE_THRESHOLD = 3;                 // Número de cambios para activar modo activo
+constexpr int STABLE_SCANS_FOR_ECO = 10;                    // Escaneos sin cambios para activar modo eco
 
-// ==================== FILTROS BLE ====================
-// ⚡ FILTRADO POR UUID DE iBeacon (para FEASYBeacon y similares)
+#define BEACON_UUID_1 "FDA50693-A4E2-4FB1-AFCF-C6EB07647825"  // UUID principal de iBeacons
+#define BEACON_UUID_2 "D546DF97-4757-47EF-BE09-3E2DCBDD0C77"  // UUID secundario de iBeacons
+#define BEACON_UUID_3 "00000000-0000-0000-0000-000000000000"  // UUID terciario (no usado)
 
-// UUID de tus beacons iBeacon (UUID por defecto de Feasybeacon)
-// TODOS tus 3 beacons tienen el mismo UUID, por lo que el sistema solo procesará
-// beacons con este UUID específico, ignorando cualquier otro dispositivo BLE
-#define BEACON_UUID_1 "FDA50693-A4E2-4FB1-AFCF-C6EB07647825"  // ✓ UUID de tus Feasybeacons
-#define BEACON_UUID_2 "00000000-0000-0000-0000-000000000000"  // UUID adicional (opcional)
-#define BEACON_UUID_3 "00000000-0000-0000-0000-000000000000"  // UUID adicional (opcional)
+#define BEACON_MAC_PREFIX "dc:0d:30:2c:e8"                   // Prefijo MAC de los beacons
 
-// Prefijo MAC de tus beacons (alternativa si no usas UUID)
-// Ejemplo: dc:0d:30:2c:e8 para FEASYBeacon
-#define BEACON_MAC_PREFIX "dc:0d:30:2c:e8"  // ⬅️ CAMBIA ESTO si tus beacons tienen otro prefijo
+constexpr int MIN_RSSI_THRESHOLD = -90;                     // RSSI mínimo para aceptar beacon (dBm)
 
-// Longitud mínima de RSSI para considerar beacon válido (-100 a 0)
-constexpr int MIN_RSSI_THRESHOLD = -90;  // Ignora beacons muy débiles
+#define TARGET_COMPANY_ID 0x004C                             // Company ID de iBeacon (Apple)
 
-// Company ID (para referencia, FEASYBeacon usa 0x004C que es Apple)
-#define TARGET_COMPANY_ID 0x004C
-
-// ==================== MODO DE FILTRADO ====================
-// Elige el método de filtrado:
 enum BeaconFilterMode {
-    FILTER_BY_UUID,          // Filtrar por UUID de iBeacon (RECOMENDADO para FEASYBeacon con Company ID 0x004C)
+    FILTER_BY_UUID,          // Filtrar por UUID de iBeacon (RECOMENDADO)
     FILTER_BY_MAC_PREFIX,    // Filtrar por prefijo de dirección MAC
-    FILTER_BY_NAME_PREFIX,   // Filtrar por prefijo del nombre del dispositivo
-    FILTER_BY_COMPANY_ID,    // Filtrar por Company ID (solo si todos usan un ID personalizado)
-    FILTER_DISABLED          // Sin filtro - acepta TODOS los beacons (solo para debug)
+    FILTER_BY_NAME_PREFIX,   // Filtrar por prefijo del nombre BLE
+    FILTER_BY_COMPANY_ID,    // Filtrar por Company ID
+    FILTER_DISABLED          // Aceptar todos los beacons (solo debug)
 };
 
-constexpr BeaconFilterMode BEACON_FILTER_MODE = FILTER_BY_UUID;  // ← CAMBIAR AQUÍ
+constexpr BeaconFilterMode BEACON_FILTER_MODE = FILTER_BY_UUID;
 
-// Método para extraer ID del animal desde el beacon iBeacon:
 enum AnimalIdSource {
-    USE_MAJOR_MINOR,         // Combinar Major (16 bits) + Minor (16 bits) = 32 bits
-    USE_MAJOR_ONLY,          // Solo usar Major como ID (0-65535)
-    USE_MINOR_ONLY,          // Solo usar Minor como ID (0-65535)
-    USE_MAC_ADDRESS          // Usar dirección MAC como ID (fallback)
+    USE_MAJOR_MINOR,         // Combinar Major + Minor = 32 bits
+    USE_MAJOR_ONLY,          // Solo Major (16 bits)
+    USE_MINOR_ONLY,          // Solo Minor (16 bits)
+    USE_MAC_ADDRESS          // Usar MAC como ID (fallback)
 };
 
-constexpr AnimalIdSource ANIMAL_ID_SOURCE = USE_MAJOR_MINOR;  // ← CAMBIAR AQUÍ
+constexpr AnimalIdSource ANIMAL_ID_SOURCE = USE_MAJOR_MINOR;
 
-extern const char* BLE_DEVICE_NAME;
+extern const char* BLE_DEVICE_NAME;                         // Nombre BLE del dispositivo
 
-// ==================== DISTANCIA POR RSSI ====================
-constexpr int RSSI_REFERENCE = -59;
-constexpr float PATH_LOSS_EXPONENT = 2.0;
+constexpr int RSSI_REFERENCE = -59;                         // RSSI de referencia para cálculo de distancia
+constexpr float PATH_LOSS_EXPONENT = 2.0;                   // Exponente de pérdida de señal
 
-constexpr float DISTANCE_NEAR = 2.0;
-constexpr float DISTANCE_MEDIUM = 5.0;
-constexpr float DISTANCE_FAR = 10.0;
+constexpr float DISTANCE_NEAR = 2.0;                        // Distancia "cerca" (metros)
+constexpr float DISTANCE_MEDIUM = 5.0;                      // Distancia "media" (metros)
+constexpr float DISTANCE_FAR = 10.0;                        // Distancia "lejos" (metros)
 
-// ==================== COMPORTAMIENTO ====================
-constexpr unsigned long MIN_TIME_EATING = 15;
-constexpr unsigned long MIN_TIME_DRINKING = 5;
-constexpr unsigned long MIN_TIME_RESTING = 30;
+constexpr unsigned long MIN_TIME_EATING = 15;               // Tiempo mínimo comiendo (min)
+constexpr unsigned long MIN_TIME_DRINKING = 5;              // Tiempo mínimo bebiendo (min)
+constexpr unsigned long MIN_TIME_RESTING = 30;              // Tiempo mínimo descansando (min)
 
-constexpr unsigned long ANIMAL_MISSING_TIMEOUT = 86400000;
-constexpr unsigned long ABNORMAL_BEHAVIOR_TIME = 7200000;
+constexpr unsigned long ANIMAL_MISSING_TIMEOUT = 86400000;  // Timeout para marcar animal perdido (24h en ms)
+constexpr unsigned long ABNORMAL_BEHAVIOR_TIME = 7200000;   // Tiempo para detectar comportamiento anormal (2h en ms)
 
-// ==================== HARDWARE ====================
-constexpr int LED_LOADER = 13;
-constexpr int LED_DANGER = 14;
-constexpr int LED_SUCCESS = 26;
-constexpr int LED_ERROR = 25;
-constexpr int ZUMBADOR = 15;
+constexpr int LED_LOADER = 13;                              // Pin LED de carga
+constexpr int LED_DANGER = 14;                              // Pin LED de peligro
+constexpr int LED_SUCCESS = 26;                             // Pin LED de éxito
+constexpr int LED_ERROR = 25;                               // Pin LED de error
+constexpr int ZUMBADOR = 15;                                // Pin del zumbador
 
-// Botón de reseteo de configuración
-constexpr int RESET_BUTTON = 27;  // Pin GPIO27 para botón de reset
-constexpr unsigned long RESET_BUTTON_HOLD_TIME = 3000;  // 3 segundos presionado
-constexpr unsigned long DEBOUNCE_DELAY = 50;  // Anti-rebote 50ms
+constexpr int RESET_BUTTON = 27;                            // Pin botón de reset
+constexpr unsigned long RESET_BUTTON_HOLD_TIME = 3000;      // Tiempo presión botón para reset (ms)
+constexpr unsigned long DEBOUNCE_DELAY = 50;                // Retardo anti-rebote (ms)
 
-constexpr int LCD_SDA = 21;
-constexpr int LCD_SCL = 22;
-constexpr uint8_t LCD_I2C_ADDR = 0x27;
-constexpr int LCD_COLS = 16;
-constexpr int LCD_ROWS = 2;
+constexpr int LCD_SDA = 21;                                 // Pin SDA del LCD I2C
+constexpr int LCD_SCL = 22;                                 // Pin SCL del LCD I2C
+constexpr uint8_t LCD_I2C_ADDR = 0x27;                      // Dirección I2C del LCD
+constexpr int LCD_COLS = 16;                                // Columnas del LCD
+constexpr int LCD_ROWS = 2;                                 // Filas del LCD
 
-// ==================== BUFFER OFFLINE ====================
-constexpr int MAX_OFFLINE_RECORDS = 100;
-constexpr unsigned long SYNC_INTERVAL = 300000;
+constexpr int MAX_OFFLINE_RECORDS = 100;                    // Máx. registros en buffer offline
+constexpr unsigned long SYNC_INTERVAL = 300000;             // Intervalo de sincronización con backend (5 min en ms)
 
-// ==================== NTP ====================
-extern const char* NTP_SERVER1;
-extern const char* NTP_SERVER2;
-constexpr long GMT_OFFSET_SEC = -21600;
-constexpr int DAYLIGHT_OFFSET_SEC = 0;
-constexpr int NTP_TIMEOUT_SECONDS = 30;
+extern const char* NTP_SERVER1;                             // Servidor NTP primario
+extern const char* NTP_SERVER2;                             // Servidor NTP secundario
+constexpr long GMT_OFFSET_SEC = -21600;                     // Offset GMT (segundos)
+constexpr int DAYLIGHT_OFFSET_SEC = 0;                      // Offset horario de verano (segundos)
+constexpr int NTP_TIMEOUT_SECONDS = 30;                     // Timeout para sincronización NTP (s)
 
-// ==================== ESTRUCTURAS ====================
 struct BeaconData {
-    uint32_t animalId;
-    String macAddress;
-    int8_t rssi;
-    float distance;
-    unsigned long firstSeen;
-    unsigned long lastSeen;
-    bool isPresent;
-    String detectedLocation;
+    uint32_t animalId;            // ID del animal (Major+Minor)
+    String macAddress;            // Dirección MAC del beacon
+    String uuid;                  // UUID del iBeacon
+    uint16_t major;               // Major del iBeacon
+    uint16_t minor;               // Minor del iBeacon
+    int8_t rssi;                  // Intensidad de señal (dBm)
+    float distance;               // Distancia calculada (metros)
+    unsigned long firstSeen;      // Primera detección (timestamp)
+    unsigned long lastSeen;       // Última detección (timestamp)
+    bool isPresent;               // Está presente en la zona
+    String detectedLocation;      // Ubicación donde fue detectado
 };
 
 struct AnimalBehavior {
-    uint32_t animalId;
-    unsigned long timeInZone;
-    unsigned long entryTime;
-    unsigned long exitTime;
-    int visitCount;
-    bool isPresent;
-    bool missingAlert;
-    float avgDistance;
-    int8_t avgRssi;
+    uint32_t animalId;            // ID del animal
+    unsigned long timeInZone;     // Tiempo total en la zona (ms)
+    unsigned long entryTime;      // Timestamp de entrada
+    unsigned long exitTime;       // Timestamp de salida
+    int visitCount;               // Número de visitas
+    bool isPresent;               // Está presente actualmente
+    bool missingAlert;            // Alerta de animal perdido
+    float avgDistance;            // Distancia promedio
+    int8_t avgRssi;               // RSSI promedio
 };
 
 struct ESPNowMessage {
-    char deviceId[32];
-    char location[64];
-    uint8_t zoneType;
-    uint32_t animalId;
-    int8_t rssi;
-    float distance;
-    bool isPresent;
-    unsigned long timestamp;
+    char deviceId[32];            // ID del dispositivo que envía
+    char location[64];            // Ubicación del dispositivo
+    uint8_t zoneType;             // Tipo de zona
+    uint32_t animalId;            // ID del animal detectado
+    int8_t rssi;                  // RSSI del beacon
+    float distance;               // Distancia calculada
+    bool isPresent;               // Está presente
+    unsigned long timestamp;      // Timestamp de detección
 };
 
-// ==================== RESET BUTTON FUNCTIONS ====================
-void initResetButton();
-bool checkResetButton();
+void initResetButton();         // Inicializa botón de reset
+bool checkResetButton();        // Verifica si botón está presionado
 
 #endif // CONFIG_H

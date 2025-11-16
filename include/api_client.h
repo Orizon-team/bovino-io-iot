@@ -11,18 +11,17 @@
 class APIClient {
 public:
     APIClient();
-    bool initializeTimeSync();
-    String getCurrentTimestamp();
-    time_t getCurrentEpoch();
+    bool initializeTimeSync();                                  // Sincroniza hora con NTP
+    String getCurrentTimestamp();                               // Obtiene timestamp actual como String
+    time_t getCurrentEpoch();                                   // Obtiene epoch actual
     
-    // Envío de detecciones a la API real
-    bool sendDetections(const std::map<uint32_t, BeaconData>& beacons);
+    bool sendDetections(const std::map<String, BeaconData>& beacons);   // Envía detecciones a la API
 
 private:
-    String createDetectionsPayload(const std::map<uint32_t, BeaconData>& beacons);
-    bool handleResponse(int httpCode, const String& response);
-    bool shouldRetry(int httpCode);
-    unsigned long getRetryDelay(int httpCode);
+    String createDetectionsPayload(const std::map<String, BeaconData>& beacons);   // Crea payload JSON
+    bool handleResponse(int httpCode, const String& response);  // Maneja respuesta HTTP
+    bool shouldRetry(int httpCode);                             // Determina si reintentar
+    unsigned long getRetryDelay(int httpCode);                  // Obtiene delay de reintento
 };
 
 extern APIClient apiClient;

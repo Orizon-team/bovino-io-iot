@@ -240,7 +240,7 @@ unsigned long APIClient::getRetryDelay(int httpCode) {
 }
 
 // ==================== Envío de Detecciones (API Real) ====================
-bool APIClient::sendDetections(const std::map<uint32_t, BeaconData>& beacons) {
+bool APIClient::sendDetections(const std::map<String, BeaconData>& beacons) {
     if (beacons.empty()) {
         Serial.println("[API] No hay detecciones para enviar");
         return false;
@@ -362,7 +362,7 @@ bool APIClient::sendDetections(const std::map<uint32_t, BeaconData>& beacons) {
 }
 
 // ==================== Creación de Payload de Detecciones ====================
-String APIClient::createDetectionsPayload(const std::map<uint32_t, BeaconData>& beacons) {
+String APIClient::createDetectionsPayload(const std::map<String, BeaconData>& beacons) {
     // ⚡ OPTIMIZACIÓN: Reducir tamaño del documento para evitar error -11
     DynamicJsonDocument doc(1536);  // Reducido de 2048 a 1536 bytes
     

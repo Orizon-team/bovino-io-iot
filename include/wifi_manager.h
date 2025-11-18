@@ -44,8 +44,10 @@ private:
     String currentSSID;                          // SSID actual
     String currentPassword;                      // Password actual
     int connectionAttempts;                      // Intentos de conexión
+    int loggedUserId;                            // ID del usuario logueado
     
     void loadStoredCredentials();               // Carga credenciales WiFi desde NVS
+    String loginUser(const String& email, const String& password);  // Login de usuario GraphQL
     void saveCredentials(const String& ssid, const String& password);   // Guarda credenciales en NVS
     void loadDeviceConfig();                     // Carga configuración del dispositivo
     void loadDeviceLocation();                   // Carga ubicación del dispositivo

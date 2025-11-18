@@ -3,6 +3,7 @@
 #include "ble_scanner.h"
 #include "wifi_manager.h"
 #include "api_client.h"
+#include "mqtt_client.h"
 #include "display_manager.h"
 #include "alerts.h"
 #include "espnow_manager.h"
@@ -148,6 +149,15 @@ void setup() {
                 alertManager.showSuccess();
                 delay(1000);
                 apiClient.initializeTimeSync();
+                
+                if (ENABLE_MQTT) {
+                    Serial.println("[INIT] Inicializando cliente MQTT...");
+                    if (mqttClient.initialize()) {
+                        Serial.println("[INIT] [OK] MQTT inicializado correctamente");
+                    } else {
+                        Serial.println("[INIT] [WARNING] MQTT no pudo inicializarse");
+                    }
+                }
                 
                 if (wifiManager.isPortalActive()) {
                     Serial.println("[INIT] Cerrando portal de configuración para liberar memoria...");
@@ -325,6 +335,10 @@ void loop() {
     
     bleScanner.performScan();
     
+    if (ENABLE_MQTT && CURRENT_DEVICE_MODE == DEVICE_MASTER) {
+        mqttClient.loop();
+    }
+    
     if (now - lastDisplayUpdate > 3000) {
         displayZoneStatus();
         lastDisplayUpdate = now;
@@ -438,22 +452,29 @@ void loop() {
                              beacon.animalId, beacon.distance, beacon.rssi);
             }
             
-            bool apiSuccess = apiClient.sendDetections(beacons);
+            bool mqttSuccess = false;
+            
+            if (ENABLE_MQTT && mqttClient.isConnected()) {
+                Serial.println("[SYNC] Enviando por MQTT...");
+                mqttSuccess = mqttClient.sendDetections(beacons);
+            } else {
+                Serial.println("[SYNC] ⚠️ MQTT no disponible");
+            }
             
             delay(500);
             alertManager.loaderOff();
             
-            if (apiSuccess) {
+            if (mqttSuccess) {
                 alertManager.showSuccess();
-                displayManager.showMessage("Sincronizado", "OK!");
+                displayManager.showMessage("Enviado MQTT", "OK!");
             } else {
                 alertManager.showError();
-                displayManager.showMessage("Error API", "Reintentando...");
+                displayManager.showMessage("Error MQTT", "Reintentando...");
             }
             
             delay(1500);
             
-            Serial.println("[SYNC] ✓ Datos enviados al backend\n");
+            Serial.println("[SYNC] ✓ Ciclo de sincronización completado\n");
         }
     }
     

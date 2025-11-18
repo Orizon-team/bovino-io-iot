@@ -27,7 +27,8 @@ WiFiManager::WiFiManager()
             pendingReconnect(false),
             lastPortalAnnounce(0),
             reconnectRequestTime(0),
-            connectionAttempts(0) {
+            connectionAttempts(0),
+            loggedUserId(0) {
 }
 
 // ==================== Inicialización ====================
@@ -402,6 +403,101 @@ void WiFiManager::clearAllConfig() {
     Serial.println("[Config] ✓ Configuración limpiada completamente");
 }
 
+// ==================== GraphQL - Login Usuario ====================
+String WiFiManager::loginUser(const String& email, const String& password) {
+    Serial.printf("[GraphQL] Intentando login con email: %s\n", email.c_str());
+    Serial.printf("[GraphQL] Memoria libre antes: %d bytes\n", ESP.getFreeHeap());
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[GraphQL] Error: WiFi no conectado");
+        return "{\"success\":false,\"message\":\"WiFi no conectado\"}";
+    }
+    
+    delay(500);
+    
+    WiFiClientSecure *client = new WiFiClientSecure();
+    if (!client) {
+        Serial.println("[GraphQL] Error: No se pudo crear cliente SSL");
+        return "{\"success\":false,\"message\":\"Error de memoria\"}";
+    }
+    
+    client->setInsecure();
+    client->setTimeout(20);
+    
+    HTTPClient http;
+    http.setTimeout(25000);
+    http.setReuse(false);
+    
+    const char* graphqlUrl = "https://bovino-io-backend.onrender.com/graphql";
+    
+    if (!http.begin(*client, graphqlUrl)) {
+        Serial.println("[GraphQL] Error: No se pudo iniciar HTTPS");
+        delete client;
+        return "{\"success\":false,\"message\":\"Error de conexión\"}";
+    }
+    
+    // Construir mutation de login
+    String mutation = "{\"query\":\"mutation Login($input: LoginUserInput!){ login(input:$input){ id_user email name } }\",\"variables\":{\"input\":{\"email\":\"" + email + "\",\"password\":\"" + password + "\"}}}";
+    
+    Serial.printf("[GraphQL] Mutation: %s\n", mutation.c_str());
+    
+    http.addHeader("Content-Type", "application/json");
+    
+    int httpCode = http.POST(mutation);
+    
+    String result = "{\"success\":false,\"message\":\"Error desconocido\"}";
+    
+    if (httpCode > 0) {
+        String response = http.getString();
+        Serial.printf("[GraphQL] Respuesta HTTP: %d\n", httpCode);
+        Serial.printf("[GraphQL] Respuesta: %s\n", response.c_str());
+        
+        if (httpCode == 200) {
+            const size_t capacity = JSON_OBJECT_SIZE(10) + 200;
+            DynamicJsonDocument doc(capacity);
+            DeserializationError error = deserializeJson(doc, response);
+            
+            if (!error) {
+                if (doc.containsKey("data")) {
+                    JsonObject dataObj = doc["data"];
+                    if (dataObj.containsKey("login")) {
+                        JsonObject loginObj = dataObj["login"];
+                        if (loginObj.containsKey("id_user")) {
+                            loggedUserId = loginObj["id_user"].as<int>();
+                            String userName = loginObj["name"] | "Usuario";
+                            Serial.printf("[GraphQL] ✓ Login exitoso - User ID: %d, Nombre: %s\n", loggedUserId, userName.c_str());
+                            result = "{\"success\":true,\"user_id\":" + String(loggedUserId) + ",\"name\":\"" + userName + "\"}";
+                        } else {
+                            result = "{\"success\":false,\"message\":\"Respuesta inválida del servidor\"}";
+                        }
+                    } else {
+                        result = "{\"success\":false,\"message\":\"Credenciales incorrectas\"}";
+                    }
+                } else if (doc.containsKey("errors")) {
+                    result = "{\"success\":false,\"message\":\"Error de autenticación\"}";
+                } else {
+                    result = "{\"success\":false,\"message\":\"Respuesta inválida\"}";
+                }
+            } else {
+                Serial.printf("[GraphQL] Error JSON: %s\n", error.c_str());
+                result = "{\"success\":false,\"message\":\"Error al procesar respuesta\"}";
+            }
+        } else {
+            result = "{\"success\":false,\"message\":\"Error HTTP " + String(httpCode) + "\"}";
+        }
+    } else {
+        Serial.printf("[GraphQL] Error de conexión: %d\n", httpCode);
+        result = "{\"success\":false,\"message\":\"Error de conexión\"}";
+    }
+    
+    http.end();
+    delete client;
+    
+    Serial.printf("[GraphQL] Memoria libre después: %d bytes\n", ESP.getFreeHeap());
+    
+    return result;
+}
+
 // ==================== GraphQL - Obtener Zonas ====================
 String WiFiManager::fetchZonesFromGraphQL(int userId) {
     Serial.printf("[GraphQL] Obteniendo zonas del usuario %d...\n", userId);
@@ -713,6 +809,36 @@ void WiFiManager::setupPortalRoutes() {
         configServer.send(200, "text/html", renderPortalPage(""));
     });
 
+    // Ruta para login de usuario
+    configServer.on("/login", HTTP_POST, [this]() {
+        IPAddress clientIP = configServer.client().remoteIP();
+        Serial.printf("[Portal] POST /login desde %s\n", clientIP.toString().c_str());
+        
+        String email = configServer.arg("email");
+        String password = configServer.arg("password");
+        
+        email.trim();
+        password.trim();
+        
+        if (email.length() == 0 || password.length() == 0) {
+            configServer.send(200, "application/json", "{\"success\":false,\"message\":\"Email y contraseña requeridos\"}");
+            return;
+        }
+        
+        if (WiFi.status() != WL_CONNECTED) {
+            configServer.send(200, "application/json", "{\"success\":false,\"message\":\"WiFi no conectado\"}");
+            return;
+        }
+        
+        Serial.printf("[Portal] Intentando login: %s\n", email.c_str());
+        
+        String loginResult = loginUser(email, password);
+        
+        Serial.printf("[Portal] Resultado login: %s\n", loginResult.c_str());
+        
+        configServer.send(200, "application/json", loginResult);
+    });
+
     // Ruta para conectar WiFi y verificar conexión
     configServer.on("/connectWifi", HTTP_POST, [this]() {
         IPAddress clientIP = configServer.client().remoteIP();
@@ -772,6 +898,13 @@ void WiFiManager::setupPortalRoutes() {
         IPAddress clientIP = configServer.client().remoteIP();
         Serial.printf("[Portal] GET /getZones desde %s\n", clientIP.toString().c_str());
         
+        // Verificar si hay usuario logueado
+        if (loggedUserId == 0) {
+            Serial.println("[Portal] ✗ No hay usuario logueado");
+            configServer.send(200, "application/json", "{\"zones\":[],\"error\":\"Usuario no autenticado\"}");
+            return;
+        }
+        
         // Verificar si WiFi está conectado
         if (WiFi.status() != WL_CONNECTED) {
             Serial.println("[Portal] ✗ WiFi NO conectado. No se pueden obtener zonas.");
@@ -780,6 +913,7 @@ void WiFiManager::setupPortalRoutes() {
         }
         
         Serial.printf("[Portal] ✓ WiFi conectado - IP: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("[Portal] ✓ Usuario logueado - ID: %d\n", loggedUserId);
         
         // ⚡ CRÍTICO: Pequeño delay adicional para asegurar estabilidad de memoria
         // antes de la primera llamada HTTPS que requiere ~8-12KB de heap contiguo
@@ -787,7 +921,7 @@ void WiFiManager::setupPortalRoutes() {
         
         Serial.println("[Portal] Llamando a fetchZonesFromGraphQL...");
         
-        String zonesJson = fetchZonesFromGraphQL(3);
+        String zonesJson = fetchZonesFromGraphQL(loggedUserId);
         
         Serial.printf("[Portal] Zonas JSON recibido (longitud: %d): %s\n", zonesJson.length(), zonesJson.c_str());
         
@@ -1005,12 +1139,17 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "var currentStep=1;";
     page += "var wifiSSID='';";
     page += "var wifiPassword='';";
+    page += "var loggedUserId=0;";
+    page += "var loggedUserName='';";
     page += "var selectedZoneId=null;";
     page += "function showStep(step){";
-    page += "document.getElementById('step1').classList.add('hidden');";
-    page += "document.getElementById('step2').classList.add('hidden');";
-    page += "document.getElementById('step3').classList.add('hidden');";
-    page += "document.getElementById('step'+step).classList.remove('hidden');";
+    page += "var steps=['step1','step2','step3'];";
+    page += "steps.forEach(function(s){";
+    page += "var el=document.getElementById(s);";
+    page += "if(el)el.classList.add('hidden');";
+    page += "});";
+    page += "var targetStep=document.getElementById('step'+step);";
+    page += "if(targetStep)targetStep.classList.remove('hidden');";
     page += "currentStep=step;";
     page += "}";
     page += "async function connectWifi(){";
@@ -1020,41 +1159,53 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "wifiSSID=ssid;";
     page += "wifiPassword=password;";
     page += "document.getElementById('connect_btn').disabled=true;";
-    page += "document.getElementById('connect_btn').innerText='⏳ Conectando...';";
+    page += "document.getElementById('connect_btn').innerText='Conectando...';";
     page += "try{";
     page += "var response=await fetch('/connectWifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ssid='+encodeURIComponent(ssid)+'&password='+encodeURIComponent(password)});";
     page += "var data=await response.json();";
     page += "if(data.success){";
-    page += "document.getElementById('wifi_status').innerHTML='<div style=\"color:green;font-weight:bold;margin:10px 0;\">✓ WiFi Conectado - IP: '+data.ip+'</div>';";
-    page += "await loadZones();";
+    page += "document.getElementById('wifi_status').innerHTML='<div style=\"color:green;font-weight:bold;margin:10px 0;\">WiFi Conectado - IP: '+data.ip+'</div>';";
     page += "showStep(2);";
     page += "}else{";
-    page += "alert('❌ Error al conectar WiFi: '+data.message);";
+    page += "alert('Error al conectar WiFi: '+data.message);";
     page += "document.getElementById('connect_btn').disabled=false;";
-    page += "document.getElementById('connect_btn').innerText='🔌 Conectar WiFi';";
+    page += "document.getElementById('connect_btn').innerText='Conectar WiFi';";
     page += "}";
     page += "}catch(error){";
-    page += "alert('❌ Error de conexión: '+error.message);";
+    page += "alert('Error de conexión: '+error.message);";
     page += "document.getElementById('connect_btn').disabled=false;";
-    page += "document.getElementById('connect_btn').innerText='🔌 Conectar WiFi';";
+    page += "document.getElementById('connect_btn').innerText='Conectar WiFi';";
     page += "}";
     page += "}";
-    page += "function selectDeviceMode(){";
-    page += "var mode=document.querySelector('input[name=\"device_mode\"]:checked').value;";
-    page += "if(mode=='master'){";
-    page += "document.getElementById('master_fields').classList.remove('hidden');";
-    page += "document.getElementById('slave_fields').classList.add('hidden');";
-    page += "}else{";
-    page += "document.getElementById('master_fields').classList.add('hidden');";
-    page += "document.getElementById('slave_fields').classList.remove('hidden');";
-    page += "}";
+    page += "async function loginUser(){";
+    page += "var email=document.getElementById('login_email').value;";
+    page += "var password=document.getElementById('login_password').value;";
+    page += "if(!email || !password){alert('Ingresa email y contraseña');return;}";
+    page += "document.getElementById('login_btn').disabled=true;";
+    page += "document.getElementById('login_btn').innerText='Autenticando...';";
+    page += "try{";
+    page += "var response=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'email='+encodeURIComponent(email)+'&password='+encodeURIComponent(password)});";
+    page += "var data=await response.json();";
+    page += "if(data.success){";
+    page += "loggedUserId=data.user_id;";
+    page += "loggedUserName=data.name;";
+    page += "document.getElementById('login_status').innerHTML='<div style=\"color:green;font-weight:bold;margin:10px 0;\">Bienvenido '+data.name+'</div>';";
+    page += "await loadZones();";
     page += "showStep(3);";
+    page += "}else{";
+    page += "alert('Error: '+data.message);";
+    page += "document.getElementById('login_btn').disabled=false;";
+    page += "document.getElementById('login_btn').innerText='Iniciar Sesión';";
+    page += "}";
+    page += "}catch(error){";
+    page += "alert('Error de conexión: '+error.message);";
+    page += "document.getElementById('login_btn').disabled=false;";
+    page += "document.getElementById('login_btn').innerText='Iniciar Sesión';";
+    page += "}";
     page += "}";
     page += "async function loadZones(){";
-    page += "var zoneSelect=document.getElementById('zone_name_master');";
-    page += "var zoneSelectSlave=document.getElementById('zone_name_slave');";
-    page += "if(zoneSelect)zoneSelect.innerHTML='<option value=\"\">⏳ Cargando zonas...</option>';";
-    page += "if(zoneSelectSlave)zoneSelectSlave.innerHTML='<option value=\"\">⏳ Cargando zonas...</option>';";
+    page += "var zoneSelect=document.getElementById('zone_name');";
+    page += "if(zoneSelect)zoneSelect.innerHTML='<option value=\"\">Cargando zonas...</option>';";
     page += "try{";
     page += "var response=await fetch('/getZones');";
     page += "if(!response.ok){throw new Error('Error HTTP '+response.status);}";
@@ -1067,80 +1218,83 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "optionsHTML+='<option value=\"'+zone.name+'\" data-zone-id=\"'+zone.id+'\">'+zone.name+'</option>';";
     page += "}";
     page += "});";
-    page += "console.log('✓ Zonas cargadas:',data.zones.length);";
+    page += "console.log('Zonas cargadas:',data.zones.length);";
     page += "}else{";
-    page += "console.warn('⚠️ No hay zonas');";
+    page += "console.warn('No hay zonas');";
     page += "optionsHTML='<option value=\"\">-- No hay zonas disponibles --</option>';";
     page += "}";
-    page += "if(zoneSelect){zoneSelect.innerHTML=optionsHTML;zoneSelect.onchange=function(){onZoneChangeMaster();};}";
-    page += "if(zoneSelectSlave){zoneSelectSlave.innerHTML=optionsHTML;zoneSelectSlave.onchange=function(){onZoneChangeSlave();};}";
+    page += "if(zoneSelect){zoneSelect.innerHTML=optionsHTML;}";
     page += "}catch(error){";
-    page += "console.error('❌ Error loadZones:',error);";
+    page += "console.error('Error loadZones:',error);";
     page += "var errorHTML='<option value=\"\">-- Error: '+error.message+'</option>';";
     page += "if(zoneSelect)zoneSelect.innerHTML=errorHTML;";
-    page += "if(zoneSelectSlave)zoneSelectSlave.innerHTML=errorHTML;";
     page += "}";
     page += "}";
-    page += "async function loadSublocations(zoneId,isMaster){";
-    page += "var subSelectMaster=document.getElementById('sub_location_master');";
-    page += "var subSelectSlave=document.getElementById('sub_location_slave');";
-    page += "var targetSelect=isMaster?subSelectMaster:subSelectSlave;";
-    page += "if(targetSelect)targetSelect.innerHTML='<option value=\"\">⏳ Cargando sublocalidades...</option>';";
+    page += "function onZoneChange(){";
+    page += "var zoneSelect=document.getElementById('zone_name');";
+    page += "var selectedOption=zoneSelect.options[zoneSelect.selectedIndex];";
+    page += "var zoneId=selectedOption.getAttribute('data-zone-id');";
+    page += "if(zoneId){";
+    page += "console.log('Zona seleccionada:',zoneId);";
+    page += "loadSublocations(zoneId);";
+    page += "}";
+    page += "}";
+    page += "async function loadSublocations(zoneId){";
+    page += "var subSelect=document.getElementById('sub_location');";
+    page += "if(subSelect)subSelect.innerHTML='<option value=\"\">Cargando sondeadores...</option>';";
+    page += "document.getElementById('device_type_info').style.display='none';";
+    page += "document.getElementById('slave_mac_section').style.display='none';";
     page += "try{";
     page += "var response=await fetch('/getSublocations?zone_id='+zoneId);";
     page += "if(!response.ok){throw new Error('Error HTTP '+response.status);}";
     page += "var data=await response.json();";
     page += "console.log('Respuesta /getSublocations:',data);";
-    page += "var optionsHTML='<option value=\"\">-- Selecciona una Sublocalidad --</option>';";
+    page += "var optionsHTML='<option value=\"\">-- Selecciona un sondeador --</option>';";
     page += "if(data.sublocations && Array.isArray(data.sublocations) && data.sublocations.length>0){";
     page += "data.sublocations.forEach(function(subloc){";
     page += "if(subloc.name){";
     page += "optionsHTML+='<option value=\"'+subloc.name+'\">'+subloc.name+'</option>';";
     page += "}";
     page += "});";
-    page += "console.log('✓ Sublocalidades cargadas:',data.sublocations.length);";
+    page += "console.log('Sondeadores cargados:',data.sublocations.length);";
     page += "}else{";
-    page += "console.warn('⚠️ No hay dispositivos');";
-    page += "optionsHTML='<option value=\"\">-- No hay dispositivos en esta zona --</option>';";
+    page += "console.warn('No hay sondeadores');";
+    page += "optionsHTML='<option value=\"\">-- No hay sondeadores en esta zona --</option>';";
     page += "}";
-    page += "if(targetSelect)targetSelect.innerHTML=optionsHTML;";
+    page += "if(subSelect)subSelect.innerHTML=optionsHTML;";
     page += "}catch(error){";
-    page += "console.error('❌ Error loadSublocations:',error);";
+    page += "console.error('Error loadSublocations:',error);";
     page += "var errorHTML='<option value=\"\">-- Error: '+error.message+'</option>';";
-    page += "if(targetSelect)targetSelect.innerHTML=errorHTML;";
+    page += "if(subSelect)subSelect.innerHTML=errorHTML;";
     page += "}";
     page += "}";
-    page += "function onZoneChangeMaster(){";
-    page += "var zoneSelect=document.getElementById('zone_name_master');";
-    page += "var selectedOption=zoneSelect.options[zoneSelect.selectedIndex];";
-    page += "var zoneId=selectedOption.getAttribute('data-zone-id');";
-    page += "if(zoneId){";
-    page += "console.log('Zona seleccionada (Master):',zoneId);";
-    page += "loadSublocations(zoneId,true);";
+    page += "function onSubLocationChange(){";
+    page += "var subLocation=document.getElementById('sub_location').value;";
+    page += "if(!subLocation){return;}";
+    page += "var parts=subLocation.split('/');";
+    page += "if(parts.length<2){return;}";
+    page += "var deviceType=parts[0].toLowerCase();";
+    page += "var deviceName=parts[1];";
+    page += "document.getElementById('device_mode').value=deviceType;";
+    page += "document.getElementById('temp_ssid').value=wifiSSID;";
+    page += "document.getElementById('temp_password').value=wifiPassword;";
+    page += "var infoDiv=document.getElementById('device_type_info');";
+    page += "var infoText=document.getElementById('device_type_text');";
+    page += "var slaveMacSection=document.getElementById('slave_mac_section');";
+    page += "if(deviceType==='master'){";
+    page += "infoText.innerText='Tipo: MAESTRO - Usará WiFi y enviará datos al servidor';";
+    page += "infoDiv.style.display='block';";
+    page += "slaveMacSection.style.display='none';";
+    page += "document.getElementById('master_mac').removeAttribute('required');";
+    page += "}else if(deviceType==='slave'){";
+    page += "infoText.innerText='Tipo: ESCLAVO - Se comunicará con el maestro vía ESP-NOW';";
+    page += "infoDiv.style.display='block';";
+    page += "slaveMacSection.style.display='block';";
+    page += "document.getElementById('master_mac').setAttribute('required','required');";
+    page += "}else{";
+    page += "infoDiv.style.display='none';";
+    page += "slaveMacSection.style.display='none';";
     page += "}";
-    page += "}";
-    page += "function onZoneChangeSlave(){";
-    page += "var zoneSelect=document.getElementById('zone_name_slave');";
-    page += "var selectedOption=zoneSelect.options[zoneSelect.selectedIndex];";
-    page += "var zoneId=selectedOption.getAttribute('data-zone-id');";
-    page += "if(zoneId){";
-    page += "console.log('Zona seleccionada (Slave):',zoneId);";
-    page += "loadSublocations(zoneId,false);";
-    page += "}";
-    page += "}";
-    page += "function prepareSubmit(isMaster){";
-    page += "var form=document.getElementById(isMaster?'form_master':'form_slave');";
-    page += "var hiddenSSID=document.createElement('input');";
-    page += "hiddenSSID.type='hidden';";
-    page += "hiddenSSID.name='temp_ssid';";
-    page += "hiddenSSID.value=wifiSSID;";
-    page += "form.appendChild(hiddenSSID);";
-    page += "var hiddenPass=document.createElement('input');";
-    page += "hiddenPass.type='hidden';";
-    page += "hiddenPass.name='temp_password';";
-    page += "hiddenPass.value=wifiPassword;";
-    page += "form.appendChild(hiddenPass);";
-    page += "return true;";
     page += "}";
     page += "</script>";
     page += "</head><body>";
@@ -1158,83 +1312,58 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "<label for='password'>Contraseña WiFi</label>";
     page += "<input type='password' id='password' maxlength='64' placeholder='Dejar vacío si es red abierta'>";
     page += "<div id='wifi_status'></div>";
-    page += "<button type='button' id='connect_btn' onclick='connectWifi()'>🔌 Conectar WiFi</button>";
+    page += "<button type='button' id='connect_btn' onclick='connectWifi()'>Conectar WiFi</button>";
     page += "</div>";
     page += "</div>";
     
-    // PASO 2: Selección de tipo de dispositivo
+    // PASO 2: Login de usuario (NUEVO)
     page += "<div id='step2' class='hidden'>";
     page += "<div class='section'>";
-    page += "<div class='section-title'>Paso 2: Selecciona el Tipo de Dispositivo</div>";
-    page += "<div class='radio-group'>";
-    page += "<div class='radio-option'>";
-    page += "<input type='radio' id='mode_master' name='device_mode' value='master' checked>";
-    page += "<label for='mode_master'>🌐 Maestro</label>";
-    page += "</div>";
-    page += "<div class='radio-option'>";
-    page += "<input type='radio' id='mode_slave' name='device_mode' value='slave'>";
-    page += "<label for='mode_slave'>📡 Esclavo</label>";
-    page += "</div>";
-    page += "</div>";
-    page += "<p class='help-text'>El Maestro usa WiFi y envía datos al servidor. Los Esclavos solo se comunican con el Maestro vía ESP-NOW.</p>";
-    page += "<button type='button' onclick='selectDeviceMode()'>➡️ Continuar</button>";
+    page += "<div class='section-title'>Paso 2: Iniciar Sesión</div>";
+    page += "<p class='help-text'>Ingresa tus credenciales para acceder a tus zonas</p>";
+    page += "<label for='login_email'>Email</label>";
+    page += "<input type='email' id='login_email' placeholder='usuario@ejemplo.com'>";
+    page += "<label for='login_password'>Contraseña</label>";
+    page += "<input type='password' id='login_password' placeholder='Tu contraseña'>";
+    page += "<div id='login_status'></div>";
+    page += "<button type='button' id='login_btn' onclick='loginUser()'>Iniciar Sesión</button>";
     page += "</div>";
     page += "</div>";
     
-    // PASO 3: Configuración específica (por defecto muestra MAESTRO)
+    // PASO 3: Configuración del dispositivo (UNIFICADO - determina tipo automáticamente)
     page += "<div id='step3' class='hidden'>";
-    
-    // MAESTRO (visible por defecto porque mode_master está checked)
-    page += "<div id='master_fields'>";
-    page += "<form id='form_master' method='POST' action='/save' onsubmit='return prepareSubmit(true)'>";
-    page += "<input type='hidden' name='device_mode' value='master'>";
+    page += "<form id='config_form' method='POST' action='/save'>";
+    page += "<input type='hidden' id='device_mode' name='device_mode' value=''>";
+    page += "<input type='hidden' id='temp_ssid' name='temp_ssid' value=''>";
+    page += "<input type='hidden' id='temp_password' name='temp_password' value=''>";
     page += "<div class='section'>";
-    page += "<div class='section-title'>🌐 Configuración del Maestro</div>";
+    page += "<div class='section-title'>Paso 3: Configuración del Dispositivo</div>";
     page += "<div class='mac-display'>" + localMacStr + "</div>";
-    page += "<p class='help-text'>⚠️ Esta es tu MAC. Cópiala para configurar los esclavos.</p>";
+    page += "<p class='help-text'>Tu dirección MAC</p>";
     page += "</div>";
     page += "<div class='section'>";
-    page += "<div class='section-title'>📍 Ubicación del Dispositivo</div>";
-    page += "<label for='zone_name_master'>Zona</label>";
-    page += "<select id='zone_name_master' name='zone_name' required>";
+    page += "<div class='section-title'>Ubicación del Dispositivo</div>";
+    page += "<label for='zone_name'>Zona</label>";
+    page += "<select id='zone_name' name='zone_name' required onchange='onZoneChange()'>";
     page += "<option value=''>-- Selecciona una Zona --</option>";
     page += "</select>";
-    page += "<label for='sub_location_master'>Sublocalidad</label>";
-    page += "<select id='sub_location_master' name='sub_location' required>";
-    page += "<option value=''>-- Selecciona una Sublocalidad --</option>";
+    page += "<label for='sub_location'>Seleccionar sondeador</label>";
+    page += "<select id='sub_location' name='sub_location' required onchange='onSubLocationChange()'>";
+    page += "<option value=''>-- Selecciona un sondeador --</option>";
     page += "</select>";
+    page += "<div id='device_type_info' style='margin-top:15px;padding:10px;background:#e3f2fd;border-radius:4px;display:none;'>";
+    page += "<p style='margin:0;font-weight:bold;color:#1976d2;' id='device_type_text'></p>";
     page += "</div>";
-    page += "<button type='submit'>💾 Guardar y Reiniciar</button>";
-    page += "</form>";
     page += "</div>";
-    
-    // ESCLAVO (oculto por defecto)
-    page += "<div id='slave_fields' class='hidden'>";
-    page += "<form id='form_slave' method='POST' action='/save' onsubmit='return prepareSubmit(false)'>";
-    page += "<input type='hidden' name='device_mode' value='slave'>";
-    page += "<div class='section'>";
-    page += "<div class='section-title'>📡 Configuración del Esclavo</div>";
+    page += "<div id='slave_mac_section' class='section' style='display:none;'>";
+    page += "<div class='section-title'>Configuración de Esclavo</div>";
     page += "<label for='master_mac'>MAC del Dispositivo Maestro</label>";
     page += "<input type='text' id='master_mac' name='master_mac' maxlength='17' ";
-    page += "placeholder='AA:BB:CC:DD:EE:FF' pattern='[A-Fa-f0-9:]{17}' required>";
-    page += "<p class='help-text'>Ingresa la MAC del dispositivo maestro ya configurado</p>";
+    page += "placeholder='AA:BB:CC:DD:EE:FF' pattern='[A-Fa-f0-9:]{17}'>";
+    page += "<p class='help-text'>Ingresa la MAC del dispositivo maestro</p>";
     page += "</div>";
-    page += "<div class='section'>";
-    page += "<div class='section-title'>📍 Ubicación del Dispositivo</div>";
-    page += "<label for='zone_name_slave'>Zona</label>";
-    page += "<select id='zone_name_slave' name='zone_name' required>";
-    page += "<option value=''>-- Selecciona una Zona --</option>";
-    page += "</select>";
-    page += "<label for='sub_location_slave'>Sublocalidad</label>";
-    page += "<select id='sub_location_slave' name='sub_location' required>";
-    page += "<option value=''>-- Selecciona una Sublocalidad --</option>";
-    page += "</select>";
-    page += "</div>";
-    page += "<button type='submit'>💾 Guardar y Reiniciar</button>";
+    page += "<button type='submit' id='save_btn'>Guardar y Reiniciar</button>";
     page += "</form>";
-    page += "</div>";
-    page += "</div>";
-    page += "</div>";
     page += "</div>";
 
     if (message.length() > 0) {

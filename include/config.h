@@ -47,6 +47,14 @@ extern const char* API_KEY;                                 // API key para aute
 constexpr int HTTP_TIMEOUT = 15000;                         // Timeout HTTP (ms)
 constexpr int MAX_RETRY_ATTEMPTS = 3;                       // Máx. reintentos en fallos HTTP
 
+extern const char* MQTT_BROKER;                             // IP del broker MQTT
+constexpr int MQTT_PORT = 8883;                             // Puerto del broker MQTT (8883 con TLS)
+extern const char* MQTT_USER;                               // Usuario MQTT (opcional)
+extern const char* MQTT_PASSWORD;                           // Contraseña MQTT (opcional)
+extern const char* MQTT_TOPIC;                              // Topic MQTT para publicar
+constexpr bool ENABLE_MQTT = true;                          // Habilitar envío por MQTT
+constexpr unsigned long MQTT_RECONNECT_INTERVAL = 5000;     // Intervalo de reconexión MQTT (ms)
+
 constexpr int SCAN_DURATION_ACTIVE = 3;                     // Duración escaneo BLE en modo activo (s)
 constexpr int SCAN_DURATION_NORMAL = 5;                     // Duración escaneo BLE en modo normal (s)
 constexpr int SCAN_DURATION_ECO = 8;                        // Duración escaneo BLE en modo eco (s)

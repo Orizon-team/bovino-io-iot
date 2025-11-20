@@ -15,6 +15,7 @@ const char* BLE_DEVICE_NAME = "ESP32-BovinoIOT";
 const char* WIFI_SSID = "UZIEL 1257";
 const char* WIFI_PASSWORD = "123456789";
 const char* CONFIG_PORTAL_PASSWORD = "bovinoiot";
+const char* AP_SSID_PREFIX = "bovino_io";
 
 // ==================== CONFIGURACIÓN API ====================
 const char* API_URL = "https://bovino-io-backend.onrender.com/detections/ingest";

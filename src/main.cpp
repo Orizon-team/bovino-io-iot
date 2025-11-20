@@ -11,6 +11,7 @@
 unsigned long lastSyncTime = 0;
 unsigned long lastDisplayUpdate = 0;
 unsigned long lastESPNowSend = 0;
+unsigned long lastMqttSend = 0;
 bool systemReady = false;
 
 void displayZoneStatus() {
@@ -360,6 +361,9 @@ void loop() {
             
             std::map<String, BeaconData> beacons = bleScanner.getBeaconData();
             
+            Serial.printf("\n[ESCLAVO-DEBUG] Verificando envío ESP-NOW...\n");
+            Serial.printf("[ESCLAVO-DEBUG] Beacons detectados localmente: %d\n", beacons.size());
+            
             if (beacons.size() > 0) {
                 Serial.printf("\n[ESP-NOW] ━━━━━ Enviando a Maestro ━━━━━\n");
                 Serial.printf("[ESP-NOW] Animales detectados: %d\n", beacons.size());
@@ -372,8 +376,18 @@ void loop() {
                     StaticJsonDocument<256> doc;
                     String currentDeviceId = LOADED_DEVICE_ID.length() > 0 ? LOADED_DEVICE_ID : DEVICE_ID;
                     String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
+                    
+                    // Extraer location del sondeador desde LOADED_SUB_LOCATION (formato: "tipo/location")
+                    String deviceLocation = currentLocation; // Fallback a zona si no hay sublocation
+                    if (LOADED_SUB_LOCATION.length() > 0) {
+                        int slashPos = LOADED_SUB_LOCATION.indexOf('/');
+                        if (slashPos > 0) {
+                            deviceLocation = LOADED_SUB_LOCATION.substring(slashPos + 1); // Extraer "Bebedero B" de "slave/Bebedero B"
+                        }
+                    }
+                    
                     doc["device_id"] = currentDeviceId;
-                    doc["device_location"] = currentLocation;
+                    doc["device_location"] = deviceLocation; // Usar location específica del sondeador
                     doc["zone_type"] = CURRENT_ZONE_TYPE;
                     doc["animal_id"] = beacon.animalId;
                     doc["rssi"] = beacon.rssi;
@@ -382,6 +396,8 @@ void loop() {
                     
                     String jsonMsg;
                     serializeJson(doc, jsonMsg);
+                    
+                    Serial.printf("[ESCLAVO-DEBUG] JSON a enviar: %s\n", jsonMsg.c_str());
                     
                     if (espNowManager.sendToMaster(jsonMsg)) {
                         alertManager.flashLED(LED_SUCCESS, 1, 50);
@@ -395,12 +411,20 @@ void loop() {
                 Serial.println("[ESP-NOW] ✓ Datos enviados al maestro\n");
                 displayManager.showMessage("Enviado OK", "");
                 delay(1000);
+            } else {
+                Serial.println("[ESCLAVO-DEBUG] ⚠️ No hay beacons para enviar al maestro");
             }
         }
     }
     
     if (CURRENT_DEVICE_MODE == DEVICE_MASTER) {
         std::vector<ESPNowMessage> receivedMsgs = espNowManager.getReceivedMessages();
+        
+        static unsigned long lastDebugPrint = 0;
+        if (now - lastDebugPrint > 30000) { // Cada 30 segundos
+            lastDebugPrint = now;
+            Serial.printf("\n[MAESTRO-DEBUG] Esperando mensajes ESP-NOW... (recibidos ahora: %d)\n", receivedMsgs.size());
+        }
         
         if (receivedMsgs.size() > 0) {
             Serial.printf("\n[MAESTRO] 📨 Mensajes de esclavos: %d\n", receivedMsgs.size());
@@ -412,6 +436,30 @@ void loop() {
             }
             
             espNowManager.clearReceivedMessages();
+        }
+        
+        // Envío independiente a MQTT (más frecuente que SYNC_INTERVAL)
+        if (ENABLE_MQTT && mqttClient.isConnected()) {
+            if (now - lastMqttSend >= MQTT_PUBLISH_INTERVAL) {
+                lastMqttSend = now;
+                
+                std::map<String, BeaconData> beacons = bleScanner.getBeaconData();
+                
+                if (beacons.size() > 0) {
+                    Serial.printf("\n[MQTT] ━━━━━ Envío periódico ━━━━━\n");
+                    Serial.printf("[MQTT] Animales detectados: %d\n", beacons.size());
+                    
+                    bool mqttSuccess = mqttClient.sendDetections(beacons);
+                    
+                    if (mqttSuccess) {
+                        Serial.println("[MQTT] ✓ Datos enviados correctamente");
+                    } else {
+                        Serial.println("[MQTT] ⚠️ Error al enviar datos");
+                    }
+                } else {
+                    Serial.println("[MQTT] No hay datos para enviar");
+                }
+            }
         }
         
         if (now - lastSyncTime > SYNC_INTERVAL) {
@@ -452,25 +500,14 @@ void loop() {
                              beacon.animalId, beacon.distance, beacon.rssi);
             }
             
-            bool mqttSuccess = false;
-            
-            if (ENABLE_MQTT && mqttClient.isConnected()) {
-                Serial.println("[SYNC] Enviando por MQTT...");
-                mqttSuccess = mqttClient.sendDetections(beacons);
-            } else {
-                Serial.println("[SYNC] ⚠️ MQTT no disponible");
-            }
+            // SYNC_INTERVAL ya no envía a MQTT (se hace independientemente arriba)
+            // Este bloque solo mantiene compatibilidad o lógica adicional
             
             delay(500);
             alertManager.loaderOff();
             
-            if (mqttSuccess) {
-                alertManager.showSuccess();
-                displayManager.showMessage("Enviado MQTT", "OK!");
-            } else {
-                alertManager.showError();
-                displayManager.showMessage("Error MQTT", "Reintentando...");
-            }
+            alertManager.showSuccess();
+            displayManager.showMessage("Sincronizado", "OK!");
             
             delay(1500);
             

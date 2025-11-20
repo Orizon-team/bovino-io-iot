@@ -41,6 +41,7 @@ constexpr unsigned long WIFI_RETRY_INTERVAL = 300000;       // Intervalo entre r
 constexpr bool ENABLE_WIFI_SYNC = true;                     // Habilitar sincronización WiFi en maestro
 constexpr bool ENABLE_WIFI_PORTAL = true;                   // Habilitar portal de configuración
 extern const char* CONFIG_PORTAL_PASSWORD;                  // Contraseña del portal de config
+extern const char* AP_SSID_PREFIX;                          // Prefijo del SSID del Access Point (se agregará _MAC)
 
 extern const char* API_URL;                                 // URL del backend API
 extern const char* API_KEY;                                 // API key para autenticación
@@ -54,6 +55,7 @@ extern const char* MQTT_PASSWORD;                           // Contraseña MQTT 
 extern const char* MQTT_TOPIC;                              // Topic MQTT para publicar
 constexpr bool ENABLE_MQTT = true;                          // Habilitar envío por MQTT
 constexpr unsigned long MQTT_RECONNECT_INTERVAL = 5000;     // Intervalo de reconexión MQTT (ms)
+constexpr unsigned long MQTT_PUBLISH_INTERVAL = 15000;      // Intervalo entre envíos MQTT (ms)
 
 constexpr int SCAN_DURATION_ACTIVE = 3;                     // Duración escaneo BLE en modo activo (s)
 constexpr int SCAN_DURATION_NORMAL = 5;                     // Duración escaneo BLE en modo normal (s)
@@ -72,7 +74,7 @@ constexpr int STABLE_SCANS_FOR_ECO = 10;                    // Escaneos sin camb
 
 #define BEACON_MAC_PREFIX "dc:0d:30:2c:e8"                   // Prefijo MAC de los beacons
 
-constexpr int MIN_RSSI_THRESHOLD = -90;                     // RSSI mínimo para aceptar beacon (dBm)
+constexpr int MIN_RSSI_THRESHOLD = -100;                     // RSSI mínimo para aceptar beacon (dBm)
 
 #define TARGET_COMPANY_ID 0x004C                             // Company ID de iBeacon (Apple)
 

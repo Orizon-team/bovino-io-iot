@@ -671,17 +671,26 @@ String WiFiManager::fetchSublocationsFromGraphQL(int zoneId) {
                         int deviceCount = 0;
                         for (JsonVariant item : devices) {
                             if (item.is<JsonObject>()) {
-                                JsonObject sublocObj = resultArray.createNestedObject();
-                                if (item.containsKey("id")) {
-                                    sublocObj["id"] = item["id"];
+                                // FILTRO: Solo incluir dispositivos con status="pending"
+                                String deviceStatus = "";
+                                if (item.containsKey("status")) {
+                                    deviceStatus = item["status"].as<String>();
                                 }
-                                // Combinar type/location
-                                String sublocation = "";
-                                if (item.containsKey("type") && item.containsKey("location")) {
-                                    sublocation = String(item["type"].as<const char*>()) + "/" + String(item["location"].as<const char*>());
-                                    sublocObj["name"] = sublocation;
+                                
+                                // Solo agregar si el estado es "pending" (disponible)
+                                if (deviceStatus == "pending") {
+                                    JsonObject sublocObj = resultArray.createNestedObject();
+                                    if (item.containsKey("id")) {
+                                        sublocObj["id"] = item["id"];
+                                    }
+                                    // Combinar type/location
+                                    String sublocation = "";
+                                    if (item.containsKey("type") && item.containsKey("location")) {
+                                        sublocation = String(item["type"].as<const char*>()) + "/" + String(item["location"].as<const char*>());
+                                        sublocObj["name"] = sublocation;
+                                    }
+                                    deviceCount++;
                                 }
-                                deviceCount++;
                             }
                         }
                         
@@ -737,7 +746,14 @@ void WiFiManager::startConfigPortal() {
     WiFi.mode(WIFI_OFF);
     delay(500);
     
-    String apSsid = String("BovinoIOT-") + DEVICE_ID;
+    // Obtener dirección MAC del ESP32
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char macStr[13];
+    sprintf(macStr, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    
+    // Crear SSID con formato: AP_SSID_PREFIX_MAC
+    String apSsid = String(AP_SSID_PREFIX) + "_" + String(macStr);
 
     // Configurar modo AP puro (sin STA)
     WiFi.mode(WIFI_AP);
@@ -1061,21 +1077,71 @@ void WiFiManager::setupPortalRoutes() {
     configServer.on("/generate_204", HTTP_GET, [this]() {  // Android
         IPAddress clientIP = configServer.client().remoteIP();
         Serial.printf("[Portal] Captive Portal detectado (Android) desde %s\n", clientIP.toString().c_str());
-        configServer.sendHeader("Location", "http://192.168.4.1", true);
-        configServer.send(302, "text/plain", "");
+        configServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        configServer.sendHeader("Pragma", "no-cache");
+        configServer.sendHeader("Expires", "-1");
+        configServer.send(200, "text/html", renderPortalPage(""));
     });
     
-    configServer.on("/hotspot-detect.html", HTTP_GET, [this]() {  // iOS
+    configServer.on("/gen_204", HTTP_GET, [this]() {  // Android alternativo
         IPAddress clientIP = configServer.client().remoteIP();
-        Serial.printf("[Portal] Captive Portal detectado (iOS) desde %s\n", clientIP.toString().c_str());
-        configServer.sendHeader("Location", "http://192.168.4.1", true);
-        configServer.send(302, "text/plain", "");
+        Serial.printf("[Portal] Captive Portal detectado (Android gen_204) desde %s\n", clientIP.toString().c_str());
+        configServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        configServer.sendHeader("Pragma", "no-cache");
+        configServer.sendHeader("Expires", "-1");
+        configServer.send(200, "text/html", renderPortalPage(""));
+    });
+    
+    configServer.on("/hotspot-detect.html", HTTP_GET, [this]() {  // iOS/macOS
+        IPAddress clientIP = configServer.client().remoteIP();
+        Serial.printf("[Portal] Captive Portal detectado (iOS/macOS) desde %s\n", clientIP.toString().c_str());
+        configServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        configServer.sendHeader("Pragma", "no-cache");
+        configServer.sendHeader("Expires", "-1");
+        configServer.send(200, "text/html", renderPortalPage(""));
+    });
+    
+    configServer.on("/library/test/success.html", HTTP_GET, [this]() {  // iOS alternativo
+        IPAddress clientIP = configServer.client().remoteIP();
+        Serial.printf("[Portal] Captive Portal detectado (iOS library) desde %s\n", clientIP.toString().c_str());
+        configServer.send(200, "text/html", renderPortalPage(""));
     });
     
     configServer.on("/connecttest.txt", HTTP_GET, [this]() {  // Windows
         IPAddress clientIP = configServer.client().remoteIP();
         Serial.printf("[Portal] Captive Portal detectado (Windows) desde %s\n", clientIP.toString().c_str());
-        configServer.send(200, "text/plain", "Microsoft Connect Test");
+        configServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        configServer.sendHeader("Pragma", "no-cache");
+        configServer.sendHeader("Expires", "-1");
+        // Devolver contenido INCORRECTO para forzar detección de captive portal
+        configServer.send(200, "text/plain", "CAPTIVE PORTAL");
+    });
+    
+    configServer.on("/ncsi.txt", HTTP_GET, [this]() {  // Windows 10
+        IPAddress clientIP = configServer.client().remoteIP();
+        Serial.printf("[Portal] Captive Portal detectado (Windows 10 ncsi) desde %s\n", clientIP.toString().c_str());
+        configServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        configServer.sendHeader("Pragma", "no-cache");
+        configServer.sendHeader("Expires", "-1");
+        configServer.send(200, "text/plain", "CAPTIVE PORTAL");
+    });
+    
+    configServer.on("/redirect", HTTP_GET, [this]() {  // Windows redirect
+        IPAddress clientIP = configServer.client().remoteIP();
+        Serial.printf("[Portal] Captive Portal detectado (Windows redirect) desde %s\n", clientIP.toString().c_str());
+        configServer.send(200, "text/html", renderPortalPage(""));
+    });
+    
+    configServer.on("/canonical.html", HTTP_GET, [this]() {  // Ubuntu/Linux
+        IPAddress clientIP = configServer.client().remoteIP();
+        Serial.printf("[Portal] Captive Portal detectado (Ubuntu/Linux) desde %s\n", clientIP.toString().c_str());
+        configServer.send(200, "text/html", renderPortalPage(""));
+    });
+    
+    configServer.on("/success.txt", HTTP_GET, [this]() {  // Firefox
+        IPAddress clientIP = configServer.client().remoteIP();
+        Serial.printf("[Portal] Captive Portal detectado (Firefox) desde %s\n", clientIP.toString().c_str());
+        configServer.send(200, "text/plain", "success");
     });
 
     // Manejar cualquier ruta no encontrada
@@ -1084,6 +1150,9 @@ void WiFiManager::setupPortalRoutes() {
         Serial.printf("[Portal] Ruta no encontrada desde %s: %s - Redirigiendo a /\n", 
                      clientIP.toString().c_str(), 
                      configServer.uri().c_str());
+        configServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        configServer.sendHeader("Pragma", "no-cache");
+        configServer.sendHeader("Expires", "-1");
         configServer.send(200, "text/html", renderPortalPage(""));
     });
 }
@@ -1105,33 +1174,33 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "body{font-family:Arial,sans-serif;background:#f5f5f5;margin:0;padding:20px;}";
     page += ".container{max-width:450px;margin:0 auto;background:#fff;border-radius:8px;";
     page += "box-shadow:0 2px 10px rgba(0,0,0,0.1);padding:30px;}";
-    page += "h1{color:#1976d2;font-size:24px;margin:0 0 10px;text-align:center;}";
+    page += "h1{color:#2e7d32;font-size:24px;margin:0 0 10px;text-align:center;}";
     page += "p{color:#666;font-size:14px;margin:0 0 20px;text-align:center;}";
     page += "label{display:block;margin:15px 0 5px;font-weight:bold;color:#333;font-size:14px;}";
     page += "input{width:100%;padding:12px;border:1px solid #ddd;border-radius:4px;";
     page += "box-sizing:border-box;font-size:16px;}";
-    page += "input:focus{outline:none;border-color:#1976d2;}";
+    page += "input:focus{outline:none;border-color:#4CAF50;}";
     page += "select{width:100%;padding:12px;border:1px solid #ddd;border-radius:4px;";
     page += "box-sizing:border-box;font-size:16px;background:#fff;cursor:pointer;}";
-    page += "select:focus{outline:none;border-color:#1976d2;}";
+    page += "select:focus{outline:none;border-color:#4CAF50;}";
     page += ".radio-group{display:flex;gap:20px;margin:15px 0;justify-content:center;}";
     page += ".radio-option{display:flex;align-items:center;padding:10px 20px;";
     page += "border:2px solid #ddd;border-radius:6px;cursor:pointer;transition:all 0.3s;}";
-    page += ".radio-option:hover{border-color:#1976d2;background:#f0f7ff;}";
+    page += ".radio-option:hover{border-color:#4CAF50;background:#e8f5e9;}";
     page += ".radio-option input{margin-right:8px;cursor:pointer;}";
     page += ".radio-option label{margin:0;cursor:pointer;font-weight:bold;font-size:15px;}";
-    page += ".radio-option input:checked + label{color:#1976d2;}";
-    page += "button{width:100%;margin-top:20px;padding:14px;background:#1976d2;";
+    page += ".radio-option input:checked + label{color:#4CAF50;}";
+    page += "button{width:100%;margin-top:20px;padding:14px;background:#4CAF50;";
     page += "color:#fff;border:none;border-radius:4px;font-size:16px;cursor:pointer;font-weight:bold;}";
-    page += "button:hover{background:#1565c0;}";
-    page += ".status{margin-top:15px;padding:12px;border-radius:4px;background:#e3f2fd;";
-    page += "color:#0d47a1;font-size:14px;text-align:center;}";
+    page += "button:hover{background:#388E3C;}";
+    page += ".status{margin-top:15px;padding:12px;border-radius:4px;background:#e8f5e9;";
+    page += "color:#2e7d32;font-size:14px;text-align:center;}";
     page += ".info{background:#f5f5f5;color:#666;margin-top:15px;padding:10px;";
     page += "border-radius:4px;font-size:12px;text-align:center;}";
     page += ".mac-display{background:#e8f5e9;color:#2e7d32;padding:15px;border-radius:4px;";
     page += "text-align:center;font-family:monospace;font-size:16px;margin:10px 0;font-weight:bold;}";
     page += ".section{margin:20px 0;padding:20px;background:#f9f9f9;border-radius:6px;}";
-    page += ".section-title{font-size:16px;font-weight:bold;color:#1976d2;margin-bottom:10px;}";
+    page += ".section-title{font-size:16px;font-weight:bold;color:#2e7d32;margin-bottom:10px;}";
     page += ".hidden{display:none !important;}";
     page += ".help-text{font-size:12px;color:#888;margin-top:5px;font-style:italic;}";
     page += "</style>";

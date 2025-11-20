@@ -78,10 +78,21 @@ void MQTTClient::loop() {
 String MQTTClient::createDetectionsPayload(const std::map<String, BeaconData>& beacons) {
     StaticJsonDocument<2048> doc;
     
-    String currentDeviceId = LOADED_DEVICE_ID.length() > 0 ? LOADED_DEVICE_ID : DEVICE_ID;
     String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
     
-    doc["device_id"] = currentDeviceId;
+    // Obtener la dirección MAC del ESP32
+    String macAddress = WiFi.macAddress();
+    
+    // Extraer location del sondeador desde LOADED_SUB_LOCATION (formato: "tipo/location")
+    String deviceLocation = currentLocation; // Fallback a zona si no hay sublocation
+    if (LOADED_SUB_LOCATION.length() > 0) {
+        int slashPos = LOADED_SUB_LOCATION.indexOf('/');
+        if (slashPos > 0) {
+            deviceLocation = LOADED_SUB_LOCATION.substring(slashPos + 1); // Extraer "Comedero A" de "master/Comedero A"
+        }
+    }
+    
+    doc["mac_address"] = macAddress;
     doc["zone_name"] = currentLocation;
     doc["timestamp"] = apiClient.getCurrentEpoch();
     
@@ -96,7 +107,7 @@ String MQTTClient::createDetectionsPayload(const std::map<String, BeaconData>& b
         
         JsonObject detection = detectionsArray.createNestedObject();
         detection["tag_id"] = beacon.animalId;
-        detection["device_location"] = currentLocation;
+        detection["device_location"] = deviceLocation; // Usar location específica del sondeador
         detection["distance"] = round(beacon.distance * 100) / 100.0;
         detection["rssi"] = beacon.rssi;
         detection["is_present"] = beacon.isPresent;

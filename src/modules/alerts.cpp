@@ -9,75 +9,87 @@ AlertManager::AlertManager() : loaderState(false) {
 
 // ==================== Inicialización ====================
 void AlertManager::initialize() {
-    // Configurar pines como salida
-    pinMode(LED_LOADER, OUTPUT);
-    pinMode(LED_SUCCESS, OUTPUT);
-    pinMode(LED_ERROR, OUTPUT);
-    pinMode(LED_DANGER, OUTPUT);
+    // Configurar pines RGB como salida
+    pinMode(LED_RGB_RED, OUTPUT);
+    pinMode(LED_RGB_GREEN, OUTPUT);
+    pinMode(LED_RGB_BLUE, OUTPUT);
     pinMode(ZUMBADOR, OUTPUT);
 
-    // Apagar todos los LEDs y buzzer
+    // Apagar LED RGB y buzzer
     allOff();
 
     Serial.println("[Alerts] Sistema de alertas inicializado");
+    Serial.println("[Alerts] LED RGB configurado:");
+    Serial.printf("[Alerts]   - Rojo: GPIO%d\n", LED_RGB_RED);
+    Serial.printf("[Alerts]   - Verde: GPIO%d\n", LED_RGB_GREEN);
+    Serial.printf("[Alerts]   - Azul: GPIO%d\n", LED_RGB_BLUE);
 }
 
-// ==================== Control del LED de Carga ====================
+// ==================== Control del LED de Carga (Loader) ====================
 void AlertManager::loaderOn() {
-    digitalWrite(LED_LOADER, HIGH);
+    setColor(0, 0, 255);  // Azul para indicar cargando
     loaderState = true;
 }
 
 void AlertManager::loaderOff() {
-    digitalWrite(LED_LOADER, LOW);
+    allOff();
     loaderState = false;
 }
 
 void AlertManager::loaderToggle() {
     loaderState = !loaderState;
-    digitalWrite(LED_LOADER, loaderState ? HIGH : LOW);
+    if (loaderState) {
+        setColor(0, 0, 255);  // Azul
+    } else {
+        allOff();
+    }
+}
+
+// ==================== Control de Color RGB ====================
+void AlertManager::setColor(uint8_t red, uint8_t green, uint8_t blue) {
+    analogWrite(LED_RGB_RED, red);
+    analogWrite(LED_RGB_GREEN, green);
+    analogWrite(LED_RGB_BLUE, blue);
+}
+
+void AlertManager::flashColor(uint8_t red, uint8_t green, uint8_t blue, int times, int delayMs) {
+    for (int i = 0; i < times; i++) {
+        setColor(red, green, blue);
+        delay(delayMs);
+        allOff();
+        delay(delayMs);
+    }
 }
 
 // ==================== Alertas Predefinidas ====================
 void AlertManager::showSuccess(int times) {
-    for (int i = 0; i < times; i++) {
-        digitalWrite(LED_SUCCESS, HIGH);
-        delay(100);
-        digitalWrite(LED_SUCCESS, LOW);
-        delay(100);
-    }
+    // Verde puro
+    flashColor(0, 255, 0, times, 100);
 }
 
 void AlertManager::showError(int times) {
+    // Rojo puro con beep
     for (int i = 0; i < times; i++) {
-        digitalWrite(LED_ERROR, HIGH);
+        setColor(255, 0, 0);
         digitalWrite(ZUMBADOR, HIGH);
         delay(200);
-        digitalWrite(LED_ERROR, LOW);
+        allOff();
         digitalWrite(ZUMBADOR, LOW);
         delay(200);
     }
 }
 
-void AlertManager::showDanger(int times) {
-    for (int i = 0; i < times; i++) {
-        digitalWrite(LED_DANGER, HIGH);
-        delay(150);
-        digitalWrite(LED_DANGER, LOW);
-        delay(150);
-    }
+void AlertManager::showWarning(int times) {
+    // Amarillo (rojo + verde)
+    flashColor(255, 255, 0, times, 150);
+}
+
+void AlertManager::showInfo(int times) {
+    // Azul puro
+    flashColor(0, 0, 255, times, 100);
 }
 
 // ==================== Control General ====================
-void AlertManager::flashLED(int ledPin, int times, int delayMs) {
-    for (int i = 0; i < times; i++) {
-        digitalWrite(ledPin, HIGH);
-        delay(delayMs);
-        digitalWrite(ledPin, LOW);
-        delay(delayMs);
-    }
-}
-
 void AlertManager::beep(int duration) {
     digitalWrite(ZUMBADOR, HIGH);
     delay(duration);
@@ -85,10 +97,8 @@ void AlertManager::beep(int duration) {
 }
 
 void AlertManager::allOff() {
-    digitalWrite(LED_LOADER, LOW);
-    digitalWrite(LED_SUCCESS, LOW);
-    digitalWrite(LED_ERROR, LOW);
-    digitalWrite(LED_DANGER, LOW);
+    analogWrite(LED_RGB_RED, 0);
+    analogWrite(LED_RGB_GREEN, 0);
+    analogWrite(LED_RGB_BLUE, 0);
     digitalWrite(ZUMBADOR, LOW);
-    loaderState = false;
 }

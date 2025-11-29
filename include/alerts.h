@@ -13,12 +13,14 @@ public:
     void loaderToggle();
     void showSuccess(int times = 3);
     void showError(int times = 3);
-    void showDanger(int times = 3);
-    void flashLED(int ledPin, int times = 3, int delayMs = 100);
+    void showWarning(int times = 3);
+    void showInfo(int times = 3);
     void beep(int duration = 200);
     void allOff();
+    void setColor(uint8_t red, uint8_t green, uint8_t blue);
 
 private:
+    void flashColor(uint8_t red, uint8_t green, uint8_t blue, int times, int delayMs);
     bool loaderState;
 };
 

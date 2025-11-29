@@ -2,530 +2,413 @@
 #include "config.h"
 #include "ble_scanner.h"
 #include "wifi_manager.h"
-#include "api_client.h"
 #include "mqtt_client.h"
 #include "display_manager.h"
 #include "alerts.h"
 #include "espnow_manager.h"
+#include <Preferences.h>
+#include <esp_system.h>
 
-unsigned long lastSyncTime = 0;
-unsigned long lastDisplayUpdate = 0;
-unsigned long lastESPNowSend = 0;
-unsigned long lastMqttSend = 0;
+unsigned long lastCycleTime = 0;
 bool systemReady = false;
 
-void displayZoneStatus() {
-    int animalCount = bleScanner.getAnimalCount();
-    
-    String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
-    String line1 = String(currentLocation);
-    if (line1.length() > 10) {
-        line1 = line1.substring(0, 10);
-    }
-    line1 += " ";
-    line1 += String(animalCount);
-    line1 += " 🐄";
-    
-    ScanMode mode = bleScanner.getCurrentMode();
-    String line2 = "Modo: ";
-    if (mode == MODE_ACTIVE) line2 += "ACTIVO ";
-    else if (mode == MODE_NORMAL) line2 += "NORMAL ";
-    else line2 += "ECO    ";
-    
-    displayManager.showMessage(line1.c_str(), line2.c_str());
-}
+void printWelcomeMessage();
+void checkResetButtonOnStartup();
+bool loadDeviceConfiguration();
+void handleConfigurationPortal();
+void initializeDisplay();
+void initializeAlerts();
+void initializeDeviceMode();
+void initializeMasterMode();
+void initializeSlaveMode();
+void initializeBLE();
+void finishSetup();
+void processSlaveCycle();
+void processMasterCycle();
+void handleResetButtonInLoop();
 
 void setup() {
     Serial.begin(115200);
-    delay(1000);
-    
-    Serial.println("\n");
-    Serial.println("╔══════════════════════════════════════════╗");
-    Serial.println("║     ESP32 - BovinoIOT v2.0               ║");
-    Serial.println("║  Sistema de Monitoreo de Ganado         ║");
-    Serial.println("╚══════════════════════════════════════════╝");
-    Serial.println();
-    
-    String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
-    String currentDeviceId = LOADED_DEVICE_ID.length() > 0 ? LOADED_DEVICE_ID : DEVICE_ID;
-    Serial.printf("Zona: %s\n", currentLocation.c_str());
-    Serial.printf("ID: %s\n", currentDeviceId.c_str());
-    
-    const char* zoneTypeName = "";
-    switch (CURRENT_ZONE_TYPE) {
-        case ZONE_FEEDER:  zoneTypeName = "Comedero"; break;
-        case ZONE_WATERER: zoneTypeName = "Bebedero"; break;
-        case ZONE_PASTURE: zoneTypeName = "Pastoreo"; break;
-        case ZONE_REST:    zoneTypeName = "Descanso"; break;
-        default:           zoneTypeName = "Genérica"; break;
+    delay(1000);  
+    printWelcomeMessage();
+    checkResetButtonOnStartup();
+    bool configurationExists = loadDeviceConfiguration();
+    initializeDisplay();
+    if (!configurationExists) {
+        handleConfigurationPortal();
     }
-    Serial.printf("Tipo: %s\n\n", zoneTypeName);
-    
-    alertManager.initialize();
-    alertManager.loaderOn();
-    
-    initResetButton();
-    
-    displayManager.initialize();
-    displayManager.showMessage("BovinoIOT v2.0", "Iniciando...");
-    delay(2000);
-    
-    wifiManager.begin();
-    
-    if (!wifiManager.isConfigured()) {
-        Serial.println("[INIT] ============================================");
-        Serial.println("[INIT] ⚠️  DISPOSITIVO NO CONFIGURADO");
-        Serial.println("[INIT] Abriendo portal de configuración...");
-        Serial.println("[INIT] ============================================");
-        
-        displayManager.showMessage("Sin Config", "Abriendo portal");
-        delay(1000);
-        
-        wifiManager.startConfigPortal();
-        
-        if (!wifiManager.isPortalActive()) {
-            Serial.println("[INIT] [ERROR] No se pudo activar el portal");
-            displayManager.showMessage("Error portal", "Reinicie ESP32");
-            while(1) { alertManager.showDanger(); delay(1000); }
-        }
-        
-        displayManager.showMessage("Portal Config", "192.168.4.1");
-        Serial.println("[INIT] ⏳ ESPERANDO configuración inicial...");
-        Serial.println("[INIT] 1. Conéctate a: BovinoIOT-" + String(DEVICE_ID));
-        Serial.println("[INIT] 2. Password: bovinoiot");
-        Serial.println("[INIT] 3. Abre: http://192.168.4.1");
-        Serial.println("[INIT] 4. Configura como MAESTRO o ESCLAVO");
-        Serial.println("[INIT] ============================================");
-        
-        while (true) {
-            wifiManager.loop();
-            delay(100);
-        }
-    }
-    
-    Serial.println("[INIT] ✓ Dispositivo configurado previamente");
-    
-    const char* modeName = (CURRENT_DEVICE_MODE == DEVICE_MASTER) ? "MAESTRO" : "ESCLAVO";
-    Serial.printf("[INIT] Modo: %s\n\n", modeName);
-    
-    if (CURRENT_DEVICE_MODE == DEVICE_MASTER) {
-        Serial.println("[INIT] Inicializando como MAESTRO...");
-        displayManager.showMessage("Modo: MAESTRO", "Init red...");
-        
-        if (!espNowManager.initializeMaster()) {
-            Serial.println("[INIT] [ERROR] Error al inicializar ESP-NOW");
-            alertManager.showError();
-        } else {
-            Serial.println("[INIT] [OK] ESP-NOW maestro inicializado");
-        }
-        
-        bool wifiConnected = false;
-        if (ENABLE_WIFI_SYNC) {
-            Serial.println("[INIT] Conectando WiFi...");
-            String ssidLabel = wifiManager.getConfiguredSSID();
-            if (ssidLabel.length() == 0) {
-                ssidLabel = "Sin config";
-            }
-            displayManager.showMessage("Conectando WiFi", ssidLabel.c_str());
-
-            const int MAX_ATTEMPTS = 3;
-            int attempt = 0;
-            
-            while (!wifiConnected && attempt < MAX_ATTEMPTS) {
-                attempt++;
-                Serial.printf("[INIT] Intento %d/%d de conexión WiFi...\n", attempt, MAX_ATTEMPTS);
-                wifiConnected = wifiManager.connect();
-                
-                if (wifiConnected) {
-                    break;
-                }
-                
-                if (attempt < MAX_ATTEMPTS) {
-                    delay(1000);
-                }
-            }
-            
-            if (wifiConnected) {
-                Serial.printf("[INIT] [OK] WiFi conectado: %s\n", wifiManager.getLocalIP().c_str());
-                alertManager.showSuccess();
-                delay(1000);
-                apiClient.initializeTimeSync();
-                
-                if (ENABLE_MQTT) {
-                    Serial.println("[INIT] Inicializando cliente MQTT...");
-                    if (mqttClient.initialize()) {
-                        Serial.println("[INIT] [OK] MQTT inicializado correctamente");
-                    } else {
-                        Serial.println("[INIT] [WARNING] MQTT no pudo inicializarse");
-                    }
-                }
-                
-                if (wifiManager.isPortalActive()) {
-                    Serial.println("[INIT] Cerrando portal de configuración para liberar memoria...");
-                    wifiManager.stopConfigPortal();
-                    delay(500);
-                    Serial.printf("[INIT] Memoria libre después de cerrar portal: %d bytes\n", ESP.getFreeHeap());
-                }
-            } else {
-                Serial.printf("[INIT] [ERROR] WiFi falló después de %d intentos\n", MAX_ATTEMPTS);
-                
-                if (ENABLE_WIFI_PORTAL) {
-                    Serial.println("[INIT] ============================================");
-                    Serial.println("[INIT] ACTIVANDO PORTAL DE CONFIGURACIÓN");
-                    Serial.println("[INIT] NO SE PUEDE CONECTAR A LA RED CONOCIDA");
-                    Serial.println("[INIT] ============================================");
-                    
-                    wifiManager.startConfigPortal();
-                    
-                    if (!wifiManager.isPortalActive()) {
-                        Serial.println("[INIT] [ERROR] No se pudo activar el portal");
-                        displayManager.showMessage("Error portal", "Reinicie ESP32");
-                        while(1) { alertManager.showDanger(); delay(1000); }
-                    }
-                    
-                    displayManager.showMessage("Portal WiFi", "192.168.4.1");
-                    alertManager.showError();
-                    
-                    Serial.println("[INIT] ⏳ ESPERANDO configuración WiFi...");
-                    Serial.println("[INIT] 1. Conéctate a: BovinoIOT-IOT_ZONA_001");
-                    Serial.println("[INIT] 2. Password: bovinoiot");
-                    Serial.println("[INIT] 3. Abre: http://192.168.4.1");
-                    Serial.println("[INIT] 4. Configura tu red WiFi");
-                    Serial.println("[INIT] ============================================");
-                    
-                    unsigned long portalStartTime = millis();
-                    const unsigned long PORTAL_TIMEOUT = 300000;
-                    unsigned long lastAnnounce = 0;
-                    
-                    while (!wifiManager.isConnected() && millis() - portalStartTime < PORTAL_TIMEOUT) {
-                        wifiManager.loop();
-                        
-                        if (millis() - lastAnnounce > 10000) {
-                            lastAnnounce = millis();
-                            unsigned long elapsed = (millis() - portalStartTime) / 1000;
-                            Serial.printf("[INIT] ⏳ Esperando... %lu seg | http://192.168.4.1\n", elapsed);
-                            displayManager.showMessage("Esperando WiFi", String(elapsed) + " seg");
-                        }
-                        
-                        delay(100);
-                    }
-                    
-                    if (wifiManager.isConnected()) {
-                        Serial.println("[INIT] ============================================");
-                        Serial.println("[INIT] ✅ WiFi CONFIGURADO Y CONECTADO!");
-                        Serial.printf("[INIT] IP: %s\n", wifiManager.getLocalIP().c_str());
-                        Serial.println("[INIT] ============================================");
-                        wifiConnected = true;
-                        wifiManager.stopConfigPortal();
-                        alertManager.showSuccess();
-                        apiClient.initializeTimeSync();
-                        delay(2000);
-                    } else {
-                        Serial.println("[INIT] ============================================");
-                        Serial.println("[INIT] ❌ TIMEOUT - No se configuró WiFi en 5 minutos");
-                        Serial.println("[INIT] ❌ El ESP32 se reiniciará");
-                        Serial.println("[INIT] ============================================");
-                        displayManager.showMessage("WiFi timeout", "Reinicie ESP32");
-                        alertManager.showError();
-                        while (1) {
-                            alertManager.showDanger();
-                            delay(1000);
-                        }
-                    }
-                } else {
-                    Serial.println("[INIT] [WARNING] Portal deshabilitado - Sin WiFi");
-                    displayManager.showMessage("Sin WiFi", "Portal OFF");
-                    delay(2000);
-                }
-            }
-        } else {
-            Serial.println("[INIT] WiFi deshabilitado (ENABLE_WIFI_SYNC = false)");
-            displayManager.showMessage("WiFi OFF", "Modo prueba");
-            delay(2000);
-        }
-        
-        Serial.println("[INIT] Red resuelta. Inicializando BLE...");
-        displayManager.showMessage("Iniciando BLE", "Espere...");
-        
-        if (!bleScanner.initialize()) {
-            Serial.println("[INIT] [ERROR] ERROR FATAL: BLE no inicializado");
-            displayManager.showMessage("ERROR BLE", "Reiniciar ESP32");
-            alertManager.showError();
-            while (1) {
-                alertManager.showDanger();
-                delay(1000);
-            }
-        }
-        
-        Serial.println("[INIT] [OK] BLE inicializado correctamente");
-        
-    } else {
-        Serial.println("[INIT] Inicializando como ESCLAVO...");
-        displayManager.showMessage("Modo: ESCLAVO", "Init...");
-        
-        if (!espNowManager.initializeSlave()) {
-            Serial.println("[INIT] [ERROR] Error al inicializar ESP-NOW");
-            displayManager.showMessage("ERROR ESP-NOW", "Verificar MAC");
-            alertManager.showError();
-            while (1) {
-                alertManager.showDanger();
-                delay(1000);
-            }
-        }
-        
-        Serial.println("[INIT] [OK] ESP-NOW esclavo inicializado");
-        delay(1000);
-        
-        Serial.println("[INIT] Inicializando BLE...");
-        displayManager.showMessage("Iniciando BLE", "Espere...");
-        
-        if (!bleScanner.initialize()) {
-            Serial.println("[INIT] [ERROR] ERROR FATAL: BLE no inicializado");
-            displayManager.showMessage("ERROR BLE", "Reiniciar ESP32");
-            alertManager.showError();
-            while (1) {
-                alertManager.showDanger();
-                delay(1000);
-            }
-        }
-        
-        Serial.println("[INIT] [OK] BLE inicializado correctamente");
-        Serial.println("[INIT] [OK] Esclavo listo para enviar a maestro");
-    }
-    
-    alertManager.loaderOff();
-    alertManager.showSuccess();
-    
-    displayManager.showMessage(DEVICE_LOCATION, "Sistema listo!");
-    delay(2000);
-    
-    systemReady = true;
-    lastSyncTime = millis();
-    lastDisplayUpdate = millis();
-    lastESPNowSend = millis();
-    
-    Serial.println("\n[INIT] ✅ Sistema inicializado - Comenzando monitoreo\n");
+    initializeAlerts();
+    initializeDeviceMode();
+    initializeBLE();
+    finishSetup();
 }
 
 void loop() {
-    if (!systemReady) {
-        delay(100);
-        return;
-    }
-    
     unsigned long now = millis();
-
-    if (checkResetButton()) {
-        Serial.println("\n[RESET] ╔════════════════════════════════════════╗");
-        Serial.println("[RESET] ║  🔴 RESETEO DE CONFIGURACIÓN        ║");
-        Serial.println("[RESET] ╚════════════════════════════════════════╝");
+    
+    // ==================== CICLO CADA 2 SEGUNDOS ====================
+    if (now - lastCycleTime >= SCAN_CYCLE_INTERVAL) {
+        lastCycleTime = now;
         
-        displayManager.showMessage("RESETEANDO", "Espere...");
-        alertManager.showDanger();
-        
-        wifiManager.clearAllConfig();
-        
-        Serial.println("[RESET] ✓ Configuración borrada");
-        Serial.println("[RESET] 🔄 Reiniciando ESP32...");
-        
-        displayManager.showMessage("Config borrada", "Reiniciando...");
-        delay(2000);
-        
-        ESP.restart();
+        if (CURRENT_DEVICE_MODE == DEVICE_SLAVE) {
+            processSlaveCycle();
+        } else {
+            processMasterCycle();
+        }
     }
     
-    bleScanner.performScan();
-    
-    if (ENABLE_MQTT && CURRENT_DEVICE_MODE == DEVICE_MASTER) {
+    if (CURRENT_DEVICE_MODE == DEVICE_MASTER && ENABLE_MQTT) {
         mqttClient.loop();
     }
     
-    if (now - lastDisplayUpdate > 3000) {
-        displayZoneStatus();
-        lastDisplayUpdate = now;
-        
-        std::vector<uint32_t> missing = bleScanner.getMissingAnimals();
-        if (missing.size() > 0) {
-            Serial.printf("[ALERTA] ⚠️ %d animales no detectados hace 24h\n", missing.size());
-            alertManager.showDanger();
-            
-            String alertMsg = String(missing.size()) + " animales";
-            displayManager.showMessage("ALERTA!", alertMsg.c_str());
-            delay(2000);
+    handleResetButtonInLoop();
+    
+    delay(10);  // Small delay para evitar watchdog
+}
+
+void printWelcomeMessage() {
+    Serial.println("\n");
+    Serial.println("==========================================");
+    Serial.println("    ESP32 - BovinoIOT v2.0 SIMPLE");
+    Serial.println("   Sistema de Monitoreo de Ganado");
+    Serial.println("==========================================");
+    Serial.println();
+}
+
+void checkResetButtonOnStartup() {
+    initResetButton();
+    Serial.println("[MAIN] Verificando botón de reset (3 segundos)...");
+    unsigned long resetCheckStart = millis();
+    while (millis() - resetCheckStart < 3000) {
+        if (checkResetButton()) {
+            Serial.println("[MAIN] Reiniciando configuración...");     
+            Preferences prefsDevice, prefsLocation, prefsWifi;
+            prefsDevice.begin("device_cfg", false);
+            prefsDevice.clear();
+            prefsDevice.end();
+            delay(100);
+            prefsLocation.begin("location_cfg", false);
+            prefsLocation.clear();
+            prefsLocation.end();
+            delay(100);
+            prefsWifi.begin("wifi_cfg", false);
+            prefsWifi.clear();
+            prefsWifi.end();
+            delay(100);
+            Serial.println("[MAIN] Configuración borrada. Reiniciando...");
+            delay(1000);
+            ESP.restart();
         }
+        delay(10);
+    }
+}
+
+bool loadDeviceConfiguration() {
+    Serial.println("[MAIN] Cargando configuración guardada...");
+    
+    Preferences prefsDevice;
+    bool configurationExists = false;
+    
+    if (prefsDevice.begin("device_cfg", true)) {  
+        uint8_t savedMode = prefsDevice.getUChar("mode", 255);
+        
+        if (savedMode == 1) {
+            CURRENT_DEVICE_MODE = DEVICE_MASTER;
+            configurationExists = true;
+            Serial.println("[MAIN] Modo cargado: MAESTRO");
+        } else if (savedMode == 0) {
+            CURRENT_DEVICE_MODE = DEVICE_SLAVE;
+            configurationExists = true;
+            Serial.println("[MAIN] Modo cargado: ESCLAVO");
+            
+            String masterMac = prefsDevice.getString("master_mac", "");
+            if (masterMac.length() > 0) {
+                Serial.printf("[MAIN] MAC Maestro: %s\n", masterMac.c_str());
+            }
+        } else {
+            Serial.println("[MAIN]   Sin configuración guardada");
+        }
+        prefsDevice.end();
+    } else {
+        Serial.println("[MAIN]   Sin configuración guardada");
     }
     
-    if (CURRENT_DEVICE_MODE == DEVICE_SLAVE) {
-        if (now - lastESPNowSend > ESPNOW_SEND_INTERVAL) {
-            lastESPNowSend = now;
+    Preferences prefsLocation;
+    if (prefsLocation.begin("location_cfg", true)) {
+        LOADED_ZONE_NAME = prefsLocation.getString("zone_name", "");
+        LOADED_SUB_LOCATION = prefsLocation.getString("sub_location", "");
+        LOADED_ZONE_ID = prefsLocation.getInt("zone_id", 0);
+        
+        if (LOADED_ZONE_NAME.length() > 0) {
+            Serial.printf("[MAIN] Zona cargada: %s (ID: %d)\n", LOADED_ZONE_NAME.c_str(), LOADED_ZONE_ID);
+        }
+        if (LOADED_SUB_LOCATION.length() > 0) {
+            Serial.printf("[MAIN] Sub-ubicación: %s\n", LOADED_SUB_LOCATION.c_str());
             
-            std::map<String, BeaconData> beacons = bleScanner.getBeaconData();
+            String deviceType, locationName;
+            int slashPos = LOADED_SUB_LOCATION.indexOf('/');
             
-            Serial.printf("\n[ESCLAVO-DEBUG] Verificando envío ESP-NOW...\n");
-            Serial.printf("[ESCLAVO-DEBUG] Beacons detectados localmente: %d\n", beacons.size());
-            
-            if (beacons.size() > 0) {
-                Serial.printf("\n[ESP-NOW] ━━━━━ Enviando a Maestro ━━━━━\n");
-                Serial.printf("[ESP-NOW] Animales detectados: %d\n", beacons.size());
-                
-                displayManager.showMessage("Enviando...", "A maestro");
-                
-                for (const auto& pair : beacons) {
-                    const BeaconData& beacon = pair.second;
-                    
-                    StaticJsonDocument<256> doc;
-                    String currentDeviceId = LOADED_DEVICE_ID.length() > 0 ? LOADED_DEVICE_ID : DEVICE_ID;
-                    String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
-                    
-                    // Extraer location del sondeador desde LOADED_SUB_LOCATION (formato: "tipo/location")
-                    String deviceLocation = currentLocation; // Fallback a zona si no hay sublocation
-                    if (LOADED_SUB_LOCATION.length() > 0) {
-                        int slashPos = LOADED_SUB_LOCATION.indexOf('/');
-                        if (slashPos > 0) {
-                            deviceLocation = LOADED_SUB_LOCATION.substring(slashPos + 1); // Extraer "Bebedero B" de "slave/Bebedero B"
-                        }
-                    }
-                    
-                    doc["device_id"] = currentDeviceId;
-                    doc["device_location"] = deviceLocation; // Usar location específica del sondeador
-                    doc["zone_type"] = CURRENT_ZONE_TYPE;
-                    doc["animal_id"] = beacon.animalId;
-                    doc["rssi"] = beacon.rssi;
-                    doc["distance"] = beacon.distance;
-                    doc["is_present"] = beacon.isPresent;
-                    
-                    String jsonMsg;
-                    serializeJson(doc, jsonMsg);
-                    
-                    Serial.printf("[ESCLAVO-DEBUG] JSON a enviar: %s\n", jsonMsg.c_str());
-                    
-                    if (espNowManager.sendToMaster(jsonMsg)) {
-                        alertManager.flashLED(LED_SUCCESS, 1, 50);
-                    } else {
-                        alertManager.flashLED(LED_ERROR, 1, 50);
-                    }
-                    
-                    delay(50);
-                }
-                
-                Serial.println("[ESP-NOW] ✓ Datos enviados al maestro\n");
-                displayManager.showMessage("Enviado OK", "");
-                delay(1000);
+            if (slashPos > 0) {
+                deviceType = LOADED_SUB_LOCATION.substring(0, slashPos);
+                locationName = LOADED_SUB_LOCATION.substring(slashPos + 1);
             } else {
-                Serial.println("[ESCLAVO-DEBUG] ⚠️ No hay beacons para enviar al maestro");
+                locationName = LOADED_SUB_LOCATION;
             }
+            
+            deviceType.toUpperCase();
+            locationName.toUpperCase();
+            locationName.replace(" ", "_");
+            locationName.replace("-", "_");
+            
+            LOADED_DEVICE_ID = "IOT_" + deviceType + "_" + locationName;
+            Serial.printf("[MAIN] ID Dispositivo: %s\n", LOADED_DEVICE_ID.c_str());
         }
+        prefsLocation.end();
     }
     
+    return configurationExists;
+}
+
+void handleConfigurationPortal() {
+    Serial.println("\n[MAIN] ========================================");
+    Serial.println("[MAIN]   NO HAY CONFIGURACION");
+    Serial.println("[MAIN]   Iniciando portal de configuracion...");
+    Serial.println("[MAIN] ========================================\n");
+    Serial.println("[MAIN]      BLE deshabilitado durante portal para liberar memoria");
+    
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char macStr[18];
+    sprintf(macStr, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    
+    Serial.println("\n===============================================");
+    Serial.printf("  MAC: %s\n", macStr);
+    Serial.println("===============================================\n");
+    
+    displayManager.showMessage("Portal Config", macStr);
+    wifiManager.startConfigPortal();
+
+    while (wifiManager.isPortalActive()) {
+        wifiManager.loop();
+        delay(10);
+    }
+    
+    Serial.println("[MAIN] Configuración completada. Reiniciando...");
+    delay(1000);
+    ESP.restart();
+}
+
+void initializeDisplay() {
+    displayManager.initialize();
+}
+
+void initializeAlerts() {
+    displayManager.showMessage("BovinoIOT", "Iniciando...");
+    alertManager.initialize();
+    alertManager.showSuccess();
+}
+
+void initializeDeviceMode() {
     if (CURRENT_DEVICE_MODE == DEVICE_MASTER) {
-        std::vector<ESPNowMessage> receivedMsgs = espNowManager.getReceivedMessages();
+        initializeMasterMode();
+    } else {
+        initializeSlaveMode();
+    }
+}
+
+void initializeMasterMode() {
+    Serial.println("\n[MAIN] =======================================");
+    Serial.println("[MAIN]   DISPOSITIVO MAESTRO");
+    Serial.println("[MAIN] =======================================");
+    
+    wifiManager.begin();
+    displayManager.showMessage("WiFi...", "Conectando");
+    
+    if (!wifiManager.connect()) {
+        Serial.println("[MAIN]     WiFi no disponible. Esperando configuración...");
+        Serial.println("[MAIN] BLE deshabilitado durante portal para liberar memoria");
         
-        static unsigned long lastDebugPrint = 0;
-        if (now - lastDebugPrint > 30000) { // Cada 30 segundos
-            lastDebugPrint = now;
-            Serial.printf("\n[MAESTRO-DEBUG] Esperando mensajes ESP-NOW... (recibidos ahora: %d)\n", receivedMsgs.size());
+        while (wifiManager.isPortalActive()) {
+            wifiManager.loop();
+            delay(10);
         }
         
-        if (receivedMsgs.size() > 0) {
-            Serial.printf("\n[MAESTRO] 📨 Mensajes de esclavos: %d\n", receivedMsgs.size());
-            
-            for (const auto& msg : receivedMsgs) {
-                Serial.printf("[MAESTRO]   Esclavo: %s (%s)\n", msg.deviceId, msg.location);
-                Serial.printf("[MAESTRO]   Animal ID=%u, RSSI=%d, Dist=%.2fm\n",
-                             msg.animalId, msg.rssi, msg.distance);
-            }
-            
-            espNowManager.clearReceivedMessages();
+        Serial.println("[MAIN] Configuración WiFi completada");
+        Serial.println("[MAIN] Iniciando modo registro de beacons...");
+        beaconRegistrationModeActive = true;
+        
+        // Inicializar botón de modo
+        initModeButton();
+        
+        // Inicializar MQTT antes del modo registro
+        if (ENABLE_MQTT) {
+            mqttClient.initialize();
         }
         
-        // Envío independiente a MQTT (más frecuente que SYNC_INTERVAL)
-        if (ENABLE_MQTT && mqttClient.isConnected()) {
-            if (now - lastMqttSend >= MQTT_PUBLISH_INTERVAL) {
-                lastMqttSend = now;
-                
-                std::map<String, BeaconData> beacons = bleScanner.getBeaconData();
-                
-                if (beacons.size() > 0) {
-                    Serial.printf("\n[MQTT] ━━━━━ Envío periódico ━━━━━\n");
-                    Serial.printf("[MQTT] Animales detectados: %d\n", beacons.size());
-                    
-                    bool mqttSuccess = mqttClient.sendDetections(beacons);
-                    
-                    if (mqttSuccess) {
-                        Serial.println("[MQTT] ✓ Datos enviados correctamente");
-                    } else {
-                        Serial.println("[MQTT] ⚠️ Error al enviar datos");
-                    }
-                } else {
-                    Serial.println("[MQTT] No hay datos para enviar");
-                }
-            }
+        // Inicializar BLE
+        if (!bleScanner.initialize()) {
+            Serial.println("[MAIN] Error al inicializar BLE");
         }
         
-        if (now - lastSyncTime > SYNC_INTERVAL) {
-            lastSyncTime = now;
+        // Entrar en modo registro de beacons
+        bleScanner.startBeaconRegistrationMode();
+        
+        // Después del modo registro, continuar con setup normal
+        beaconRegistrationModeActive = false;
+        Serial.println("[MAIN] Modo registro finalizado. Continuando con setup normal...");
+    }
+    
+    if (ENABLE_MQTT && !mqttClient.isConnected()) {
+        mqttClient.initialize();
+        displayManager.showMessage("MQTT...", "Conectando");
+    }
+    
+    if (!espNowManager.initializeMaster()) {
+        Serial.println("[MAIN]   Error al inicializar ESP-NOW");
+    }
+}
+
+void initializeSlaveMode() {
+    Serial.println("\n[MAIN] =======================================");
+    Serial.println("[MAIN]   DISPOSITIVO ESCLAVO");
+    Serial.println("[MAIN] =======================================");
+    
+    if (!espNowManager.initializeSlave()) {
+        Serial.println("[MAIN]   Error al inicializar ESP-NOW");
+        displayManager.showMessage("ERROR", "ESP-NOW");
+        alertManager.showError();
+        while (1) delay(1000);
+    }
+}
+
+void initializeBLE() {
+    if (!bleScanner.initialize()) {
+        Serial.println("[MAIN]  Error al inicializar BLE");
+        displayManager.showMessage("ERROR", "BLE fallido");
+        alertManager.showError();
+        while (1) delay(1000);
+    }
+}
+
+void finishSetup() {
+    systemReady = true;
+    displayManager.showMessage("Sistema", "Listo");
+    alertManager.showSuccess();
+    delay(2000);
+    
+    Serial.println("\n[MAIN] Sistema inicializado correctamente");
+    Serial.println("[MAIN] Iniciando ciclo de escaneo...\n");
+}
+
+void processSlaveCycle() {
+    Serial.println("\n[ESCLAVO] ━━━━━ Ciclo Esclavo ━━━━━");
+    
+    bleScanner.performScan();
+    std::map<String, BeaconData> beacons = bleScanner.getBeaconData();
+    
+    if (beacons.size() > 0) {
+        Serial.printf("[ESCLAVO] Beacons detectados: %d\n", beacons.size());
+        
+        for (const auto& pair : beacons) {
+            const BeaconData& beacon = pair.second;
             
-            if (!wifiManager.isConnected()) {
-                Serial.println("[SYNC] WiFi desconectado, intentando reconectar...");
-                displayManager.showMessage("Conectando", "WiFi...");
-                wifiManager.reconnect();
-                
-                if (!wifiManager.isConnected()) {
-                    Serial.println("[SYNC] Sin WiFi - Datos en buffer offline");
-                    displayManager.showMessage("Sin WiFi", "Modo offline");
-                    delay(2000);
-                    return;
-                }
-            }
-            
-            std::map<String, BeaconData> beacons = bleScanner.getBeaconData();
-            
-            if (beacons.size() == 0) {
-                Serial.println("[SYNC] No hay datos para sincronizar");
-                return;
-            }
-            
-            Serial.printf("\n[SYNC] ━━━━━ Sincronización ━━━━━\n");
-            String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
+            StaticJsonDocument<256> doc;
             String currentDeviceId = LOADED_DEVICE_ID.length() > 0 ? LOADED_DEVICE_ID : DEVICE_ID;
-            Serial.printf("[SYNC] Zona local: %s (%s)\n", currentLocation.c_str(), currentDeviceId.c_str());
-            Serial.printf("[SYNC] Animales detectados localmente: %d\n", beacons.size());
+            String currentLocation = beacon.detectedLocation;
             
-            displayManager.showMessage("Sincronizando", "Espere...");
-            alertManager.loaderOn();
+            doc["device_id"] = currentDeviceId;
+            doc["device_location"] = currentLocation;
+            doc["animal_id"] = beacon.animalId;
+            doc["rssi"] = beacon.rssi;
+            doc["distance"] = beacon.distance;
             
-            for (const auto& pair : beacons) {
-                const BeaconData& beacon = pair.second;
-                Serial.printf("[SYNC]   🐄 ID=%u, Dist=%.2fm, RSSI=%d dBm\n",
-                             beacon.animalId, beacon.distance, beacon.rssi);
+            String jsonMessage;
+            serializeJson(doc, jsonMessage);
+            
+            espNowManager.sendToMaster(jsonMessage);
+            Serial.printf("[ESCLAVO] → Enviado: ID=%u, RSSI=%d, Dist=%.2fm\n",
+                         beacon.animalId, beacon.rssi, beacon.distance);
+        }
+    } else {
+        Serial.println("[ESCLAVO] Sin beacons detectados");
+    }
+    
+    bleScanner.clearBeacons();
+    displayManager.showMessage("Esclavo", String(beacons.size()) + " vacas");
+}
+
+void processMasterCycle() {
+    Serial.println("\n[MAESTRO] ━━━━━ Ciclo Maestro ━━━━━");
+    
+    bleScanner.performScan();
+    std::map<String, BeaconData> localBeacons = bleScanner.getBeaconData();
+    Serial.printf("[MAESTRO] Beacons locales: %d\n", localBeacons.size());
+    
+    std::vector<ESPNowMessage> receivedMsgs = espNowManager.getReceivedMessages();
+    Serial.printf("[MAESTRO] Mensajes de esclavos: %d\n", receivedMsgs.size());
+    
+    std::map<String, BeaconData> allBeacons = localBeacons;
+    
+    for (const auto& msg : receivedMsgs) {
+        BeaconData remoteBeacon;
+        remoteBeacon.animalId = msg.animalId;
+        remoteBeacon.rssi = msg.rssi;
+        remoteBeacon.distance = msg.distance;
+        remoteBeacon.detectedLocation = String(msg.location);
+        remoteBeacon.macAddress = String(msg.deviceId) + "_remote";
+        
+        String beaconKey = remoteBeacon.macAddress + "_" + String(msg.animalId);
+        allBeacons[beaconKey] = remoteBeacon;
+        
+        Serial.printf("[MAESTRO] → Remoto: ID=%u, RSSI=%d, Ubicación=%s\n",
+                     msg.animalId, msg.rssi, msg.location);
+    }
+    
+    Serial.printf("[MAESTRO] Total beacons: %d\n", allBeacons.size());
+    
+    if (ENABLE_MQTT && mqttClient.isConnected()) {
+        if (allBeacons.size() > 0) {
+            bool mqttSuccess = mqttClient.sendDetections(allBeacons);
+            if (mqttSuccess) {
+                Serial.println("[MAESTRO] Datos enviados a MQTT");
+            } else {
+                Serial.println("[MAESTRO] Error al enviar MQTT");
             }
-            
-            // SYNC_INTERVAL ya no envía a MQTT (se hace independientemente arriba)
-            // Este bloque solo mantiene compatibilidad o lógica adicional
-            
-            delay(500);
-            alertManager.loaderOff();
-            
-            alertManager.showSuccess();
-            displayManager.showMessage("Sincronizado", "OK!");
-            
-            delay(1500);
-            
-            Serial.println("[SYNC] ✓ Ciclo de sincronización completado\n");
+        } else {
+            Serial.println("[MAESTRO] Sin datos para enviar a MQTT");
         }
     }
     
-    if (CURRENT_DEVICE_MODE == DEVICE_MASTER) {
-        static unsigned long lastWifiCheck = 0;
-        if (now - lastWifiCheck > 30000) {
-            lastWifiCheck = now;
-            
-            if (!wifiManager.isConnected()) {
-                Serial.println("[WiFi] Reconectando...");
-                wifiManager.reconnect();
-            }
-        }
+    bleScanner.clearBeacons();
+    espNowManager.clearReceivedMessages();
+    displayManager.showMessage("Maestro", String(allBeacons.size()) + " vacas");
+}
+
+void handleResetButtonInLoop() {
+    if (checkResetButton()) {
+        Serial.println("[MAIN] Reset solicitado. Borrando configuración...");
+        
+        Preferences prefsDevice, prefsLocation, prefsWifi;
+        
+        prefsDevice.begin("device_cfg", false);
+        prefsDevice.clear();
+        prefsDevice.end();
+        delay(100);
+        
+        prefsLocation.begin("location_cfg", false);
+        prefsLocation.clear();
+        prefsLocation.end();
+        delay(100);
+        
+        prefsWifi.begin("wifi_cfg", false);
+        prefsWifi.clear();
+        prefsWifi.end();
+        delay(100);
+        
+        Serial.println("[MAIN] Configuración borrada. Reiniciando en 2 segundos...");
+        displayManager.showMessage("RESET", "Reiniciando");
+        alertManager.showWarning();
+        delay(2000);
+        ESP.restart();
     }
-    
-    delay(100);
 }

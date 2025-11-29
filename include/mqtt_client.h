@@ -15,6 +15,7 @@ public:
     bool reconnect();                                           // Reconecta al broker
     void loop();                                                // Mantiene la conexión activa
     bool sendDetections(const std::map<String, BeaconData>& beacons);   // Envía detecciones al broker
+    bool publish(const char* topic, const char* payload);       // Publica mensaje a un topic
 
 private:
     WiFiClientSecure wifiClient;                                // Cliente WiFi con TLS

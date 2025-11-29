@@ -54,11 +54,11 @@ bool MQTTClient::reconnect() {
     }
     
     if (connected) {
-        Serial.println("[MQTT] ✅ Conectado al broker MQTT");
+        Serial.println("[MQTT] Conectado al broker MQTT");
         mqttClient.subscribe(MQTT_TOPIC);
         return true;
     } else {
-        Serial.printf("[MQTT] ❌ Error al conectar. Código: %d\n", mqttClient.state());
+        Serial.printf("[MQTT] Error al conectar. Código: %d\n", mqttClient.state());
         return false;
     }
 }
@@ -73,6 +73,14 @@ void MQTTClient::loop() {
     } else {
         mqttClient.loop();
     }
+}
+
+bool MQTTClient::publish(const char* topic, const char* payload) {
+    if (!mqttClient.connected()) {
+        Serial.println("[MQTT] No conectado, no se puede publicar");
+        return false;
+    }
+    return mqttClient.publish(topic, payload);
 }
 
 String MQTTClient::createDetectionsPayload(const std::map<String, BeaconData>& beacons) {
@@ -101,18 +109,17 @@ String MQTTClient::createDetectionsPayload(const std::map<String, BeaconData>& b
     for (const auto& pair : beacons) {
         const BeaconData& beacon = pair.second;
         
-        if (!beacon.isPresent) {
-            continue;
-        }
-        
         JsonObject detection = detectionsArray.createNestedObject();
         detection["tag_id"] = beacon.animalId;
-        detection["device_location"] = deviceLocation; // Usar location específica del sondeador
+        
+        // Usar la ubicación específica del beacon (puede ser del maestro o esclavo)
+        String beaconLocation = (beacon.detectedLocation.length() > 0) 
+                                ? beacon.detectedLocation 
+                                : deviceLocation; // Fallback a ubicación del maestro
+        detection["device_location"] = beaconLocation;
+        
         detection["distance"] = round(beacon.distance * 100) / 100.0;
         detection["rssi"] = beacon.rssi;
-        detection["is_present"] = beacon.isPresent;
-        detection["first_seen"] = beacon.firstSeen / 1000;
-        detection["last_seen"] = beacon.lastSeen / 1000;
     }
     
     String payload;
@@ -142,10 +149,10 @@ bool MQTTClient::sendDetections(const std::map<String, BeaconData>& beacons) {
     bool success = mqttClient.publish(MQTT_TOPIC, payload.c_str());
     
     if (success) {
-        Serial.println("[MQTT] ✅ Datos publicados correctamente");
+        Serial.println("[MQTT] Datos publicados correctamente");
         return true;
     } else {
-        Serial.println("[MQTT] ❌ Error al publicar datos");
+        Serial.println("[MQTT] Error al publicar datos");
         return false;
     }
 }

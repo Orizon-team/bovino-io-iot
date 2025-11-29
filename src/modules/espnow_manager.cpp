@@ -1,5 +1,6 @@
 #include "espnow_manager.h"
 #include <ArduinoJson.h>
+#include <esp_wifi.h>
 
 // Instancia global
 ESPNowManager espNowManager;
@@ -30,7 +31,10 @@ void ESPNowManager::onDataReceive(const uint8_t* mac, const uint8_t* data, int l
 bool ESPNowManager::initializeMaster() {
     Serial.println("[ESP-NOW] Inicializando como MAESTRO...");
     
-    WiFi.mode(WIFI_STA);
+    // No cambiar modo WiFi si ya está conectado
+    if (WiFi.status() != WL_CONNECTED) {
+        WiFi.mode(WIFI_STA);
+    }
     
     if (esp_now_init() != ESP_OK) {
         Serial.println("[ESP-NOW] Error al inicializar ESP-NOW");
@@ -40,8 +44,13 @@ bool ESPNowManager::initializeMaster() {
     esp_now_register_recv_cb(onDataReceive);
     
     isMaster = true;
+    
+    // Obtener canal actual del WiFi
+    int currentChannel = WiFi.channel();
     Serial.println("[ESP-NOW] Maestro inicializado correctamente");
     Serial.printf("[ESP-NOW] MAC Address: %s\n", WiFi.macAddress().c_str());
+    Serial.printf("[ESP-NOW] Canal WiFi actual: %d\n", currentChannel);
+    Serial.println("[ESP-NOW] ADVERTENCIA: El esclavo debe usar el mismo canal para comunicarse");
     
     return true;
 }
@@ -51,6 +60,37 @@ bool ESPNowManager::initializeSlave() {
     Serial.println("[ESP-NOW] Inicializando como ESCLAVO...");
     
     WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    
+    // Escanear redes WiFi para encontrar el canal del maestro
+    Serial.println("[ESP-NOW] Escaneando para detectar canal del maestro...");
+    int n = WiFi.scanNetworks();
+    int detectedChannel = 1; // Fallback al canal 1
+    
+    if (n > 0) {
+        Serial.printf("[ESP-NOW] Encontradas %d redes WiFi\n", n);
+        // Intentar detectar el canal mirando redes cercanas
+        // Usaremos el canal de la red más fuerte como referencia
+        int maxRSSI = -100;
+        for (int i = 0; i < n; i++) {
+            int rssi = WiFi.RSSI(i);
+            if (rssi > maxRSSI) {
+                maxRSSI = rssi;
+                detectedChannel = WiFi.channel(i);
+            }
+        }
+        Serial.printf("[ESP-NOW] Canal detectado: %d (RSSI más fuerte: %d dBm)\n", detectedChannel, maxRSSI);
+    } else {
+        Serial.println("[ESP-NOW] No se encontraron redes WiFi, usando canal 1");
+    }
+    
+    // Configurar el canal WiFi antes de inicializar ESP-NOW
+    WiFi.disconnect();
+    esp_wifi_set_promiscuous(true);
+    esp_wifi_set_channel(detectedChannel, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_promiscuous(false);
+    
+    Serial.printf("[ESP-NOW] Canal WiFi configurado: %d\n", detectedChannel);
     
     if (esp_now_init() != ESP_OK) {
         Serial.println("[ESP-NOW] Error al inicializar ESP-NOW");
@@ -76,7 +116,14 @@ bool ESPNowManager::initializeSlave() {
 // Agregar peer
 bool ESPNowManager::addPeer(const uint8_t* macAddress) {
     memcpy(masterPeerInfo.peer_addr, macAddress, 6);
-    masterPeerInfo.channel = ESPNOW_CHANNEL;
+    
+    // Usar canal 0 para autodetección o ESPNOW_CHANNEL si está configurado
+    if (ESPNOW_CHANNEL == 0) {
+        masterPeerInfo.channel = 0;  // Auto: usar el canal actual del WiFi
+    } else {
+        masterPeerInfo.channel = ESPNOW_CHANNEL;
+    }
+    
     masterPeerInfo.encrypt = false;
 
     if (esp_now_add_peer(&masterPeerInfo) != ESP_OK) {
@@ -105,12 +152,9 @@ bool ESPNowManager::sendToMaster(const String& jsonMessage) {
     ESPNowMessage msg;
     strncpy(msg.deviceId, doc["device_id"] | "", sizeof(msg.deviceId) - 1);
     strncpy(msg.location, doc["device_location"] | "", sizeof(msg.location) - 1);
-    msg.zoneType = doc["zone_type"] | 0;
     msg.animalId = doc["animal_id"] | 0;
     msg.rssi = doc["rssi"] | 0;
     msg.distance = doc["distance"] | 0.0f;
-    msg.isPresent = doc["is_present"] | false;
-    msg.timestamp = millis();
 
     esp_err_t result = esp_now_send(MASTER_MAC_ADDRESS, (uint8_t*)&msg, sizeof(msg));
     

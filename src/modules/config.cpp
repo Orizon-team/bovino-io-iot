@@ -38,6 +38,10 @@ ZoneType CURRENT_ZONE_TYPE = ZONE_FEEDER;
 String LOADED_ZONE_NAME = "";
 String LOADED_SUB_LOCATION = "";
 String LOADED_DEVICE_ID = "";
+int LOADED_ZONE_ID = 0;
+
+// Modo de registro de beacons
+bool beaconRegistrationModeActive = false;
 
 // ==================== MODO DISPOSITIVO ====================
 DeviceMode CURRENT_DEVICE_MODE = DEVICE_SLAVE;  // Por defecto es ESCLAVO
@@ -57,10 +61,24 @@ void initResetButton() {
 }
 
 /**
- * Verifica si el botón de reset ha sido presionado durante 3 segundos
- * Implementa debouncing y validación de tiempo sostenido
- * @return true si se debe resetear la configuración
+ * Inicializa el botón de cambio de modo
  */
+void initModeButton() {
+    pinMode(MODE_BUTTON, INPUT);  // Sin pull-up, el switch maneja la señal
+    Serial.printf("[Mode] Switch de modo configurado en GPIO%d\n", MODE_BUTTON);
+    Serial.println("[Mode] Izquierda=REGISTRO, Derecha=NORMAL");
+}
+
+/**
+ * Verifica el estado del switch de modo
+ * @return true si está en modo REGISTRO (LOW), false si está en modo NORMAL (HIGH)
+ */
+bool isRegistrationModeActive() {
+    // LOW = GND = Modo REGISTRO
+    // HIGH = 3.3V = Modo NORMAL
+    return digitalRead(MODE_BUTTON) == LOW;
+}
+
 bool checkResetButton() {
     int reading = digitalRead(RESET_BUTTON);
     
@@ -80,7 +98,7 @@ bool checkResetButton() {
             if (buttonState == LOW && !buttonWasPressed) {
                 buttonWasPressed = true;
                 buttonPressStart = millis();
-                Serial.println("[Reset] ⏳ Botón presionado - mantén 3 seg...");
+                Serial.println("[Reset]   Botón presionado - mantén 3 seg...");
             }
             
             // ========== BOTÓN LIBERADO ==========
@@ -88,7 +106,7 @@ bool checkResetButton() {
                 unsigned long pressDuration = millis() - buttonPressStart;
                 buttonWasPressed = false;
                 
-                Serial.printf("[Reset] ❌ Botón liberado después de %lu ms\n", pressDuration);
+                Serial.printf("[Reset]   Botón liberado después de %lu ms\n", pressDuration);
             }
         }
     }
@@ -101,12 +119,12 @@ bool checkResetButton() {
         static unsigned long lastFeedback = 0;
         if (pressDuration >= 1000 && pressDuration - lastFeedback >= 1000) {
             lastFeedback = pressDuration;
-            Serial.printf("[Reset] ⏱️  Presionado: %lu ms / %lu ms\n", pressDuration, RESET_BUTTON_HOLD_TIME);
+            Serial.printf("[Reset]   Presionado: %lu ms / %lu ms\n", pressDuration, RESET_BUTTON_HOLD_TIME);
         }
         
         // ✅ VERIFICAR SI YA SE CUMPLIERON LOS 3 SEGUNDOS
         if (pressDuration >= RESET_BUTTON_HOLD_TIME) {
-            Serial.println("\n[Reset] ✅ RESET CONFIRMADO - Borrando configuración...");
+            Serial.println("\n[Reset]   RESET CONFIRMADO - Borrando configuración...");
             buttonWasPressed = false;  // Evitar múltiples triggers
             return true;  // ← RESET ACTIVADO
         }

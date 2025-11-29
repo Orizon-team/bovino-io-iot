@@ -28,7 +28,9 @@ WiFiManager::WiFiManager()
             lastPortalAnnounce(0),
             reconnectRequestTime(0),
             connectionAttempts(0),
-            loggedUserId(0) {
+            loggedUserId(0),
+            dnsServerActive(false),
+            backendIPCached(false) {
 }
 
 // ==================== Inicialización ====================
@@ -137,6 +139,7 @@ void WiFiManager::stopConfigPortal() {
     
     // Detener DNS Server
     dnsServer.stop();
+    dnsServerActive = false;
     
     // Detener Web Server
     configServer.stop();
@@ -154,7 +157,10 @@ void WiFiManager::stopConfigPortal() {
 // ==================== Loop del Portal ====================
 void WiFiManager::loop() {
     if (portalActive) {
-        dnsServer.processNextRequest();  // Procesar peticiones DNS (Captive Portal)
+        // Solo procesar DNS si está activo
+        if (dnsServerActive) {
+            dnsServer.processNextRequest();  // Procesar peticiones DNS (Captive Portal)
+        }
         configServer.handleClient();     // Procesar peticiones HTTP
 
         // Anunciar el portal periódicamente (cada 30 segundos)
@@ -163,7 +169,9 @@ void WiFiManager::loop() {
             Serial.println("[Portal] ==========================================");
             Serial.printf("[Portal] URL: http://%s\n", WiFi.softAPIP().toString().c_str());
             Serial.printf("[Portal] Clientes conectados: %d\n", WiFi.softAPgetStationNum());
-            Serial.println("[Portal] DNS activo: Redirigiendo todas las URLs");
+            if (dnsServerActive) {
+                Serial.println("[Portal] DNS activo: Redirigiendo todas las URLs");
+            }
             Serial.println("[Portal] Acceso manual: http://192.168.4.1");
             Serial.println("[Portal] ==========================================");
         }
@@ -265,9 +273,10 @@ void WiFiManager::loadDeviceConfig() {
 void WiFiManager::loadDeviceLocation() {
     Preferences prefs;
     if (prefs.begin("location_cfg", true)) {
-        // Cargar zona y sublocalización
+        // Cargar zona, sublocalización y zone_id
         LOADED_ZONE_NAME = prefs.getString("zone_name", "");
         LOADED_SUB_LOCATION = prefs.getString("sub_location", "");
+        LOADED_ZONE_ID = prefs.getInt("zone_id", 0);
         
         if (LOADED_ZONE_NAME.length() > 0 && LOADED_SUB_LOCATION.length() > 0) {
             // Generar DEVICE_ID desde sublocalización (formato: tipo/nombre)
@@ -290,7 +299,7 @@ void WiFiManager::loadDeviceLocation() {
             LOADED_DEVICE_ID = "IOT_" + deviceType + "_" + locationName;
             
             Serial.printf("[Config] Ubicación cargada:\n");
-            Serial.printf("  - Zona: %s\n", LOADED_ZONE_NAME.c_str());
+            Serial.printf("  - Zona: %s (ID: %d)\n", LOADED_ZONE_NAME.c_str(), LOADED_ZONE_ID);
             Serial.printf("  - Sublocalización: %s\n", LOADED_SUB_LOCATION.c_str());
             Serial.printf("  - Device ID: %s\n", LOADED_DEVICE_ID.c_str());
         } else {
@@ -298,6 +307,7 @@ void WiFiManager::loadDeviceLocation() {
             LOADED_ZONE_NAME = DEVICE_LOCATION;  // Usar valor hardcoded como fallback
             LOADED_SUB_LOCATION = DEVICE_LOCATION;
             LOADED_DEVICE_ID = DEVICE_ID;
+            LOADED_ZONE_ID = 0;
         }
         
         prefs.end();
@@ -378,21 +388,21 @@ void WiFiManager::clearAllConfig() {
     if (prefs.begin("wifi_cfg", false)) {
         prefs.clear();
         prefs.end();
-        Serial.println("[Config] ✓ WiFi limpiado");
+        Serial.println("[Config] WiFi limpiado");
     }
     
     // Limpiar configuración del dispositivo
     if (prefs.begin("device_cfg", false)) {
         prefs.clear();
         prefs.end();
-        Serial.println("[Config] ✓ Dispositivo limpiado");
+        Serial.println("[Config] Dispositivo limpiado");
     }
     
     // Limpiar configuración de ubicación
     if (prefs.begin("location_cfg", false)) {
         prefs.clear();
         prefs.end();
-        Serial.println("[Config] ✓ Ubicación limpiada");
+        Serial.println("[Config] Ubicacion limpiada");
     }
     
     // Resetear variables
@@ -400,7 +410,44 @@ void WiFiManager::clearAllConfig() {
     currentPassword = "";
     CURRENT_DEVICE_MODE = DEVICE_SLAVE;  // Por defecto ESCLAVO
     
-    Serial.println("[Config] ✓ Configuración limpiada completamente");
+    Serial.println("[Config] Configuracion limpiada completamente");
+}
+
+// ==================== Resolver DNS con Retry ====================
+bool WiFiManager::resolveBackendDNS(IPAddress& ip) {
+    const char* hostname = "bovino-io-backend.onrender.com";
+    const int MAX_DNS_RETRIES = 3;
+    const int DNS_RETRY_DELAY = 2000;
+    
+    // Si ya tenemos IP en cache, usar ese
+    if (backendIPCached) {
+        ip = cachedBackendIP;
+        Serial.printf("[DNS] Usando IP en cache: %s\n", ip.toString().c_str());
+        return true;
+    }
+    
+    // Intentar resolver DNS con retries
+    for (int i = 0; i < MAX_DNS_RETRIES; i++) {
+        Serial.printf("[DNS] Intento %d/%d resolviendo: %s\n", i + 1, MAX_DNS_RETRIES, hostname);
+        
+        if (WiFi.hostByName(hostname, ip)) {
+            Serial.printf("[DNS] Resuelto exitosamente: %s\n", ip.toString().c_str());
+            // Guardar en cache
+            cachedBackendIP = ip;
+            backendIPCached = true;
+            return true;
+        }
+        
+        Serial.printf("[DNS] Fallo intento %d\n", i + 1);
+        
+        if (i < MAX_DNS_RETRIES - 1) {
+            Serial.printf("[DNS] Esperando %dms antes de reintentar...\n", DNS_RETRY_DELAY);
+            delay(DNS_RETRY_DELAY);
+        }
+    }
+    
+    Serial.println("[DNS] ERROR: No se pudo resolver DNS despues de todos los intentos");
+    return false;
 }
 
 // ==================== GraphQL - Login Usuario ====================
@@ -415,31 +462,56 @@ String WiFiManager::loginUser(const String& email, const String& password) {
     
     delay(500);
     
+    // Resolver DNS con retry
+    IPAddress serverIP;
+    if (!resolveBackendDNS(serverIP)) {
+        return "{\"success\":false,\"message\":\"No se pudo resolver DNS del servidor\"}";
+    }
+    
     WiFiClientSecure *client = new WiFiClientSecure();
     if (!client) {
         Serial.println("[GraphQL] Error: No se pudo crear cliente SSL");
         return "{\"success\":false,\"message\":\"Error de memoria\"}";
     }
     
+    Serial.println("[GraphQL] Configurando cliente SSL...");
     client->setInsecure();
-    client->setTimeout(20);
+    client->setTimeout(90);
+    Serial.printf("[GraphQL] Cliente configurado - Timeout: 90s\n");
     
     HTTPClient http;
-    http.setTimeout(25000);
+    http.setTimeout(60000);  // 60 segundos
     http.setReuse(false);
     
     const char* graphqlUrl = "https://bovino-io-backend.onrender.com/graphql";
     
+    Serial.printf("[GraphQL] Conectando a: %s\n", graphqlUrl);
+    Serial.printf("[GraphQL] Email a autenticar: %s\n", email.c_str());
+    
+    Serial.println("[GraphQL] Iniciando conexion HTTPS...");
+    unsigned long startConnect = millis();
+    
     if (!http.begin(*client, graphqlUrl)) {
-        Serial.println("[GraphQL] Error: No se pudo iniciar HTTPS");
+        Serial.println("[GraphQL] Error: http.begin() fallo");
         delete client;
         return "{\"success\":false,\"message\":\"Error de conexión\"}";
     }
     
-    // Construir mutation de login
-    String mutation = "{\"query\":\"mutation Login($input: LoginUserInput!){ login(input:$input){ id_user email name } }\",\"variables\":{\"input\":{\"email\":\"" + email + "\",\"password\":\"" + password + "\"}}}";
+    unsigned long connectTime = millis() - startConnect;
+    Serial.printf("[GraphQL] Conexion establecida en %lu ms\n", connectTime);
     
-    Serial.printf("[GraphQL] Mutation: %s\n", mutation.c_str());
+    // Construir mutation de login (formato exacto como Postman)
+    String mutation = String("{") +
+        "\"query\":\"mutation Login($input: LoginUserInput!){ login(input:$input){ id_user email name } }\"," +
+        "\"variables\":{" +
+            "\"input\":{" +
+                "\"email\":\"" + email + "\"," +
+                "\"password\":\"" + password + "\"" +
+            "}" +
+        "}" +
+    "}";
+    
+    Serial.printf("[GraphQL] Mutation JSON:\n%s\n", mutation.c_str());
     
     http.addHeader("Content-Type", "application/json");
     
@@ -463,10 +535,16 @@ String WiFiManager::loginUser(const String& email, const String& password) {
                     if (dataObj.containsKey("login")) {
                         JsonObject loginObj = dataObj["login"];
                         if (loginObj.containsKey("id_user")) {
-                            loggedUserId = loginObj["id_user"].as<int>();
-                            String userName = loginObj["name"] | "Usuario";
-                            Serial.printf("[GraphQL] ✓ Login exitoso - User ID: %d, Nombre: %s\n", loggedUserId, userName.c_str());
-                            result = "{\"success\":true,\"user_id\":" + String(loggedUserId) + ",\"name\":\"" + userName + "\"}";
+                            int userId = loginObj["id_user"].as<int>();
+                            if (userId > 0) {
+                                loggedUserId = userId;
+                                String userName = loginObj["name"] | "Usuario";
+                                Serial.printf("[GraphQL] Login exitoso - User ID: %d, Nombre: %s\n", loggedUserId, userName.c_str());
+                                result = "{\"success\":true,\"user_id\":" + String(loggedUserId) + ",\"name\":\"" + userName + "\"}";
+                            } else {
+                                Serial.printf("[GraphQL] Login falló - User ID inválido: %d\n", userId);
+                                result = "{\"success\":false,\"message\":\"Credenciales incorrectas\"}";
+                            }
                         } else {
                             result = "{\"success\":false,\"message\":\"Respuesta inválida del servidor\"}";
                         }
@@ -474,7 +552,13 @@ String WiFiManager::loginUser(const String& email, const String& password) {
                         result = "{\"success\":false,\"message\":\"Credenciales incorrectas\"}";
                     }
                 } else if (doc.containsKey("errors")) {
-                    result = "{\"success\":false,\"message\":\"Error de autenticación\"}";
+                    JsonArray errors = doc["errors"];
+                    String errorMsg = "Error de autenticación";
+                    if (errors.size() > 0) {
+                        errorMsg = errors[0]["message"] | "Error desconocido";
+                    }
+                    Serial.printf("[GraphQL] Error GraphQL: %s\n", errorMsg.c_str());
+                    result = "{\"success\":false,\"message\":\"" + errorMsg + "\"}";
                 } else {
                     result = "{\"success\":false,\"message\":\"Respuesta inválida\"}";
                 }
@@ -487,7 +571,10 @@ String WiFiManager::loginUser(const String& email, const String& password) {
         }
     } else {
         Serial.printf("[GraphQL] Error de conexión: %d\n", httpCode);
-        result = "{\"success\":false,\"message\":\"Error de conexión\"}";
+        String errorMsg = "Timeout de conexión";
+        if (httpCode == -1) errorMsg = "Conexión rechazada";
+        else if (httpCode == -11) errorMsg = "Timeout SSL (servidor tardó mucho)";
+        result = "{\"success\":false,\"message\":\"" + errorMsg + "\"}";
     }
     
     http.end();
@@ -514,6 +601,13 @@ String WiFiManager::fetchZonesFromGraphQL(int userId) {
     
     Serial.printf("[GraphQL] IP: %s\n", WiFi.localIP().toString().c_str());
     
+    // Resolver DNS con retry
+    IPAddress serverIP;
+    if (!resolveBackendDNS(serverIP)) {
+        Serial.println("[GraphQL] Error: No se pudo resolver DNS para obtener zonas");
+        return "[]";
+    }
+    
     // Cliente WiFi seguro
     WiFiClientSecure *client = new WiFiClientSecure();
     if (!client) {
@@ -522,10 +616,10 @@ String WiFiManager::fetchZonesFromGraphQL(int userId) {
     }
     
     client->setInsecure();
-    client->setTimeout(20);
+    client->setTimeout(90);  // Aumentado a 90 segundos
     
     HTTPClient http;
-    http.setTimeout(25000);
+    http.setTimeout(60000);  // 60 segundos
     http.setReuse(false);
     
     const char* graphqlUrl = "https://bovino-io-backend.onrender.com/graphql";
@@ -584,7 +678,7 @@ String WiFiManager::fetchZonesFromGraphQL(int userId) {
                         
                         result = "";  // Limpiar el string antes de serializar
                         serializeJson(resultArray, result);
-                        Serial.printf("[GraphQL] ✓ Zonas obtenidas: %d\n", zoneCount);
+                        Serial.printf("[GraphQL] Zonas obtenidas: %d\n", zoneCount);
                         Serial.printf("[GraphQL] JSON resultado: %s\n", result.c_str());
                     } else {
                         Serial.println("[GraphQL] Error: Campo 'zonesByUser' no encontrado");
@@ -610,6 +704,96 @@ String WiFiManager::fetchZonesFromGraphQL(int userId) {
     return result;
 }
 
+// ==================== GraphQL - Actualizar Estado del Dispositivo ====================
+bool WiFiManager::updateDispositivoStatus(int dispositivoId, const String& status, int batteryLevel) {
+    Serial.printf("[GraphQL] Actualizando dispositivo %d - status: %s, battery: %d\n", dispositivoId, status.c_str(), batteryLevel);
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[GraphQL] Error: WiFi no conectado - saltando actualizacion");
+        return false;
+    }
+    
+    // Resolver DNS con retry (pero con timeout corto)
+    IPAddress serverIP;
+    if (!backendIPCached) {
+        Serial.println("[GraphQL] IP no en cache, intentando resolver DNS rapido...");
+        // Solo 1 intento para no bloquear
+        if (WiFi.hostByName("bovino-io-backend.onrender.com", serverIP)) {
+            Serial.printf("[GraphQL] DNS resuelto: %s\n", serverIP.toString().c_str());
+            cachedBackendIP = serverIP;
+            backendIPCached = true;
+        } else {
+            Serial.println("[GraphQL] DNS no pudo resolverse - saltando actualizacion");
+            return false;
+        }
+    } else {
+        serverIP = cachedBackendIP;
+        Serial.printf("[GraphQL] Usando IP en cache: %s\n", serverIP.toString().c_str());
+    }
+    
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(10);  // Timeout corto de 10s
+    
+    HTTPClient http;
+    http.setTimeout(12000);  // 12 segundos
+    http.setReuse(false);
+    
+    const char* graphqlUrl = "https://bovino-io-backend.onrender.com/graphql";
+    
+    if (!http.begin(client, graphqlUrl)) {
+        Serial.println("[GraphQL] Error: No se pudo iniciar conexión HTTPS");
+        return false;
+    }
+    
+    // Construir mutation
+    String mutation = "{\"query\":\"mutation UpdateDispositivo($id: Int!, $input: UpdateDispositivoInput!){ updateDispositivo(id: $id, input: $input){ id status battery_level } }\",\"variables\":{\"id\":" + String(dispositivoId) + ",\"input\":{\"status\":\"" + status + "\",\"battery_level\":" + String(batteryLevel) + "}}}";
+    
+    Serial.printf("[GraphQL] Mutation: %s\n", mutation.c_str());
+    
+    http.addHeader("Content-Type", "application/json");
+    
+    int httpCode = http.POST(mutation);
+    bool success = false;
+    
+    if (httpCode > 0) {
+        String response = http.getString();
+        Serial.printf("[GraphQL] Respuesta HTTP: %d\n", httpCode);
+        Serial.printf("[GraphQL] Respuesta: %s\n", response.c_str());
+        
+        if (httpCode == 200) {
+            const size_t capacity = JSON_OBJECT_SIZE(10) + 200;
+            DynamicJsonDocument doc(capacity);
+            DeserializationError error = deserializeJson(doc, response);
+            
+            if (!error) {
+                if (doc.containsKey("data")) {
+                    JsonObject dataObj = doc["data"];
+                    if (dataObj.containsKey("updateDispositivo")) {
+                        Serial.println("[GraphQL] Dispositivo actualizado correctamente");
+                        success = true;
+                    } else {
+                        Serial.println("[GraphQL] Error: Campo 'updateDispositivo' no encontrado");
+                    }
+                } else if (doc.containsKey("errors")) {
+                    Serial.println("[GraphQL] Error en mutation: respuesta con errores");
+                } else {
+                    Serial.println("[GraphQL] Error: Respuesta inválida");
+                }
+            } else {
+                Serial.printf("[GraphQL] Error JSON: %s\n", error.c_str());
+            }
+        } else {
+            Serial.printf("[GraphQL] Error HTTP: %d\n", httpCode);
+        }
+    } else {
+        Serial.printf("[GraphQL] Error de conexión: %d\n", httpCode);
+    }
+    
+    http.end();
+    return success;
+}
+
 // ==================== GraphQL - Obtener Sublocalidades por Zona ====================
 String WiFiManager::fetchSublocationsFromGraphQL(int zoneId) {
     Serial.printf("[GraphQL] Obteniendo sublocalidades de la zona %d...\n", zoneId);
@@ -617,6 +801,13 @@ String WiFiManager::fetchSublocationsFromGraphQL(int zoneId) {
     // Verificar conexión WiFi
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("[GraphQL] Error: WiFi no conectado");
+        return "[]";
+    }
+    
+    // Resolver DNS con retry
+    IPAddress serverIP;
+    if (!resolveBackendDNS(serverIP)) {
+        Serial.println("[GraphQL] Error: No se pudo resolver DNS para obtener sublocalidades");
         return "[]";
     }
     
@@ -639,7 +830,7 @@ String WiFiManager::fetchSublocationsFromGraphQL(int zoneId) {
     Serial.println("[GraphQL] Conexión HTTPS iniciada");
     
     // Query GraphQL para dispositivos por zona
-    String query = "{\"query\":\"query DevicesByZone($id_zone: Int!){ dispositivosByZone(id_zone: $id_zone){ id type location battery_level status zone { id name } } }\",\"variables\":{\"id_zone\":" + String(zoneId) + "}}";
+    String query = "{\"query\":\"query DevicesByZone($id_zone: Int!){ dispositivosByZone(id_zone: $id_zone){ id type location mac_address battery_level status zone { id name } } }\",\"variables\":{\"id_zone\":" + String(zoneId) + "}}";
     
     Serial.printf("[GraphQL] Query: %s\n", query.c_str());
     
@@ -668,6 +859,9 @@ String WiFiManager::fetchSublocationsFromGraphQL(int zoneId) {
                         DynamicJsonDocument resultDoc(JSON_ARRAY_SIZE(20) + JSON_OBJECT_SIZE(50));
                         JsonArray resultArray = resultDoc.createNestedArray();
                         
+                        // Limpiar MAC detectada al inicio
+                        detectedMasterMac = "";
+                        
                         int deviceCount = 0;
                         for (JsonVariant item : devices) {
                             if (item.is<JsonObject>()) {
@@ -675,6 +869,23 @@ String WiFiManager::fetchSublocationsFromGraphQL(int zoneId) {
                                 String deviceStatus = "";
                                 if (item.containsKey("status")) {
                                     deviceStatus = item["status"].as<String>();
+                                }
+                                
+                                // Extraer tipo y MAC del dispositivo
+                                String deviceType = "";
+                                if (item.containsKey("type")) {
+                                    deviceType = item["type"].as<String>();
+                                }
+                                
+                                String deviceMac = "";
+                                if (item.containsKey("mac_address")) {
+                                    deviceMac = item["mac_address"].as<String>();
+                                }
+                                
+                                // Guardar MAC del maestro si lo encontramos
+                                if (deviceType == "master" && deviceMac.length() > 0) {
+                                    detectedMasterMac = deviceMac;
+                                    Serial.printf("[GraphQL] MAC del maestro detectado: %s\n", detectedMasterMac.c_str());
                                 }
                                 
                                 // Solo agregar si el estado es "pending" (disponible)
@@ -696,7 +907,7 @@ String WiFiManager::fetchSublocationsFromGraphQL(int zoneId) {
                         
                         result = "";
                         serializeJson(resultArray, result);
-                        Serial.printf("[GraphQL] ✓ Sublocalidades obtenidas: %d\n", deviceCount);
+                        Serial.printf("[GraphQL] Sublocalidades obtenidas: %d\n", deviceCount);
                         Serial.printf("[GraphQL] JSON resultado: %s\n", result.c_str());
                     } else {
                         Serial.println("[GraphQL] Error: Campo 'dispositivosByZone' no encontrado");
@@ -718,14 +929,19 @@ String WiFiManager::fetchSublocationsFromGraphQL(int zoneId) {
     return result;
 }
 
-String WiFiManager::saveDeviceLocation(const String& zoneName, const String& subLocation) {
+String WiFiManager::saveDeviceLocation(const String& zoneName, const String& subLocation, int zoneId) {
     Preferences prefs;
     if (prefs.begin("location_cfg", false)) {
         prefs.putString("zone_name", zoneName);
         prefs.putString("sub_location", subLocation);
+        prefs.putInt("zone_id", zoneId);
         prefs.end();
-        Serial.printf("[Config] Ubicación guardada - Zona: %s, Sublocalización: %s\n", 
-                     zoneName.c_str(), subLocation.c_str());
+        Serial.printf("[Config] Ubicación guardada - Zona: %s (ID: %d), Sublocalización: %s\n", 
+                     zoneName.c_str(), zoneId, subLocation.c_str());
+        
+        // Actualizar variable global
+        LOADED_ZONE_ID = zoneId;
+        
         return "OK";
     }
     return "ERROR";
@@ -788,9 +1004,11 @@ void WiFiManager::startConfigPortal() {
     const byte DNS_PORT = 53;
     bool dnsStarted = dnsServer.start(DNS_PORT, "*", local_IP);
     if (dnsStarted) {
+        dnsServerActive = true;  // Marcar DNS como activo
         Serial.printf("[Portal] DNS Server iniciado en puerto %d (Captive Portal activo)\n", DNS_PORT);
         Serial.printf("[Portal] Redirigiendo todas las DNS queries a %s\n", local_IP.toString().c_str());
     } else {
+        dnsServerActive = false;
         Serial.println("[Portal] [ADVERTENCIA] No se pudo iniciar DNS Server");
     }
     
@@ -817,11 +1035,34 @@ void WiFiManager::startConfigPortal() {
     Serial.println("[Portal] =================================");
 }
 
+// Helper para agregar headers CORS a todas las respuestas
+void WiFiManager::sendCORSHeaders() {
+    configServer.sendHeader("Access-Control-Allow-Origin", "*");
+    configServer.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    configServer.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
 void WiFiManager::setupPortalRoutes() {
+    // Handler para peticiones OPTIONS (preflight CORS)
+    configServer.onNotFound([this]() {
+        if (configServer.method() == HTTP_OPTIONS) {
+            sendCORSHeaders();
+            configServer.send(200);
+            return;
+        }
+        IPAddress clientIP = configServer.client().remoteIP();
+        String path = configServer.uri();
+        Serial.printf("[Portal] Ruta no encontrada desde %s: %s - Redirigiendo a /\n", 
+                      clientIP.toString().c_str(), path.c_str());
+        configServer.sendHeader("Location", "/");
+        configServer.send(302);
+    });
+    
     // Ruta principal
     configServer.on("/", HTTP_GET, [this]() {
         IPAddress clientIP = configServer.client().remoteIP();
         Serial.printf("[Portal] GET / desde %s\n", clientIP.toString().c_str());
+        sendCORSHeaders();
         configServer.send(200, "text/html", renderPortalPage(""));
     });
 
@@ -829,6 +1070,8 @@ void WiFiManager::setupPortalRoutes() {
     configServer.on("/login", HTTP_POST, [this]() {
         IPAddress clientIP = configServer.client().remoteIP();
         Serial.printf("[Portal] POST /login desde %s\n", clientIP.toString().c_str());
+        
+        sendCORSHeaders();
         
         String email = configServer.arg("email");
         String password = configServer.arg("password");
@@ -848,6 +1091,10 @@ void WiFiManager::setupPortalRoutes() {
         
         Serial.printf("[Portal] Intentando login: %s\n", email.c_str());
         
+        // Liberar memoria antes de operación HTTPS
+        Serial.printf("[Portal] Memoria libre antes de login: %d bytes\n", ESP.getFreeHeap());
+        delay(500);  // Breve pausa para estabilizar conexión
+        
         String loginResult = loginUser(email, password);
         
         Serial.printf("[Portal] Resultado login: %s\n", loginResult.c_str());
@@ -859,6 +1106,8 @@ void WiFiManager::setupPortalRoutes() {
     configServer.on("/connectWifi", HTTP_POST, [this]() {
         IPAddress clientIP = configServer.client().remoteIP();
         Serial.printf("[Portal] POST /connectWifi desde %s\n", clientIP.toString().c_str());
+        
+        sendCORSHeaders();
         
         String ssid = configServer.arg("ssid");
         String password = configServer.arg("password");
@@ -889,20 +1138,29 @@ void WiFiManager::setupPortalRoutes() {
         }
         
         if (WiFi.status() == WL_CONNECTED) {
-            Serial.println("\n[Portal] ✓ WiFi conectado exitosamente");
+            Serial.println("\n[Portal] WiFi conectado exitosamente");
             Serial.printf("[Portal] IP obtenida: %s\n", WiFi.localIP().toString().c_str());
             
-            // ⚡ CRÍTICO: Dar tiempo para que la memoria se estabilice después de conectar WiFi
-            // El modo AP+STA causa fragmentación de memoria. Este delay permite que el heap
-            // se reorganice antes del primer request HTTPS/SSL que requiere memoria contigua
-            delay(1000);
+            // Detener DNS server para liberar memoria (ya no se necesita)
+            dnsServer.stop();
+            dnsServerActive = false;
+            Serial.println("[Portal] DNS Server detenido (ya no se necesita)");
             
-            // Forzar garbage collection
+            // Mantener portal accesible durante configuración
+            Serial.println("[Portal] IMPORTANTE: Portal sigue activo en ambas redes:");
+            Serial.printf("[Portal]   - Access Point: http://%s\n", WiFi.softAPIP().toString().c_str());
+            Serial.printf("[Portal]   - Red WiFi: http://%s\n", WiFi.localIP().toString().c_str());
+            Serial.println("[Portal] Si pierdes conexión, reconéctate al AP bovino_io_xxx");
+            
+            // Guardar credenciales WiFi
+            saveCredentials(ssid, password);
+            
+            // Liberar memoria manualmente
             Serial.printf("[Portal] Memoria libre post-WiFi: %d bytes\n", ESP.getFreeHeap());
             
-            configServer.send(200, "application/json", "{\"success\":true,\"message\":\"WiFi conectado\",\"ip\":\"" + WiFi.localIP().toString() + "\"}");
+            configServer.send(200, "application/json", "{\"success\":true,\"message\":\"WiFi conectado\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"portalIP\":\"" + WiFi.softAPIP().toString() + "\"}");
         } else {
-            Serial.println("\n[Portal] ✗ Error al conectar WiFi");
+            Serial.println("\n[Portal] Error al conectar WiFi");
             WiFi.disconnect();
             WiFi.mode(WIFI_AP);  // Volver a modo AP puro
             configServer.send(200, "application/json", "{\"success\":false,\"message\":\"No se pudo conectar al WiFi\"}");
@@ -914,22 +1172,24 @@ void WiFiManager::setupPortalRoutes() {
         IPAddress clientIP = configServer.client().remoteIP();
         Serial.printf("[Portal] GET /getZones desde %s\n", clientIP.toString().c_str());
         
+        sendCORSHeaders();
+        
         // Verificar si hay usuario logueado
         if (loggedUserId == 0) {
-            Serial.println("[Portal] ✗ No hay usuario logueado");
+            Serial.println("[Portal] No hay usuario logueado");
             configServer.send(200, "application/json", "{\"zones\":[],\"error\":\"Usuario no autenticado\"}");
             return;
         }
         
         // Verificar si WiFi está conectado
         if (WiFi.status() != WL_CONNECTED) {
-            Serial.println("[Portal] ✗ WiFi NO conectado. No se pueden obtener zonas.");
+            Serial.println("[Portal] WiFi NO conectado. No se pueden obtener zonas.");
             configServer.send(200, "application/json", "{\"zones\":[],\"error\":\"WiFi no conectado\"}");
             return;
         }
         
-        Serial.printf("[Portal] ✓ WiFi conectado - IP: %s\n", WiFi.localIP().toString().c_str());
-        Serial.printf("[Portal] ✓ Usuario logueado - ID: %d\n", loggedUserId);
+        Serial.printf("[Portal] WiFi conectado - IP: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("[Portal] Usuario logueado - ID: %d\n", loggedUserId);
         
         // ⚡ CRÍTICO: Pequeño delay adicional para asegurar estabilidad de memoria
         // antes de la primera llamada HTTPS que requiere ~8-12KB de heap contiguo
@@ -952,22 +1212,24 @@ void WiFiManager::setupPortalRoutes() {
         IPAddress clientIP = configServer.client().remoteIP();
         Serial.printf("[Portal] GET /getSublocations desde %s\n", clientIP.toString().c_str());
         
+        sendCORSHeaders();
+        
         String zoneIdStr = configServer.arg("zone_id");
         int zoneId = zoneIdStr.toInt();
         
         if (zoneId == 0) {
-            Serial.println("[Portal] ✗ zone_id inválido o no proporcionado");
+            Serial.println("[Portal] zone_id invalido o no proporcionado");
             configServer.send(200, "application/json", "{\"sublocations\":[],\"error\":\"zone_id requerido\"}");
             return;
         }
         
         if (WiFi.status() != WL_CONNECTED) {
-            Serial.println("[Portal] ✗ WiFi NO conectado");
+            Serial.println("[Portal] WiFi NO conectado");
             configServer.send(200, "application/json", "{\"sublocations\":[],\"error\":\"WiFi no conectado\"}");
             return;
         }
         
-        Serial.printf("[Portal] ✓ Obteniendo sublocalidades para zona ID: %d\n", zoneId);
+        Serial.printf("[Portal] Obteniendo sublocalidades para zona ID: %d\n", zoneId);
         
         String sublocationsJson = fetchSublocationsFromGraphQL(zoneId);
         
@@ -979,8 +1241,16 @@ void WiFiManager::setupPortalRoutes() {
         configServer.send(200, "application/json", response);
     });
 
+    // Manejador OPTIONS para CORS preflight en /save
+    configServer.on("/save", HTTP_OPTIONS, [this]() {
+        sendCORSHeaders();
+        configServer.send(204);  // No Content
+    });
+
     // Ruta para guardar configuración
     configServer.on("/save", HTTP_POST, [this]() {
+        sendCORSHeaders();  // Agregar headers CORS
+        
         IPAddress clientIP = configServer.client().remoteIP();
         Serial.printf("[Portal] POST /save desde %s\n", clientIP.toString().c_str());
         
@@ -990,6 +1260,9 @@ void WiFiManager::setupPortalRoutes() {
         String masterMac = configServer.arg("master_mac");
         String zoneName = configServer.arg("zone_name");
         String subLocation = configServer.arg("sub_location");
+        String dispositivoIdStr = configServer.arg("dispositivo_id");
+        String zoneIdStr = configServer.arg("zone_id");
+        int zoneId = zoneIdStr.toInt();
 
         deviceMode.trim();
         tempSSID.trim();
@@ -1001,13 +1274,13 @@ void WiFiManager::setupPortalRoutes() {
         // Validar zona y sublocalización (requeridas para TODOS)
         if (zoneName.length() == 0) {
             Serial.println("[Portal] Error: Zona requerida");
-            configServer.send(200, "text/html", renderPortalPage("❌ Debes seleccionar una Zona."));
+            configServer.send(200, "text/html", renderPortalPage("   Debes seleccionar una Zona."));
             return;
         }
         
         if (subLocation.length() == 0) {
             Serial.println("[Portal] Error: Sublocalización requerida");
-            configServer.send(200, "text/html", renderPortalPage("❌ Debes seleccionar una Sublocalización."));
+            configServer.send(200, "text/html", renderPortalPage("   Debes seleccionar una Sublocalización."));
             return;
         }
 
@@ -1019,58 +1292,116 @@ void WiFiManager::setupPortalRoutes() {
             // MAESTRO: Guardar WiFi persistentemente
             if (tempSSID.length() == 0) {
                 Serial.println("[Portal] Error: MAESTRO requiere SSID");
-                configServer.send(200, "text/html", renderPortalPage("❌ El modo MAESTRO requiere configurar WiFi."));
+                configServer.send(200, "text/html", renderPortalPage("   El modo MAESTRO requiere configurar WiFi."));
                 return;
             }
             
             Serial.printf("[Portal] Configurando MAESTRO\n");
             Serial.printf("[Portal] WiFi SSID: %s (se guardará persistentemente)\n", tempSSID.c_str());
-            Serial.printf("[Portal] Zona: %s, Sublocalización: %s\n", zoneName.c_str(), subLocation.c_str());
+            Serial.printf("[Portal] Zona: %s (ID: %d), Sublocalización: %s\n", zoneName.c_str(), zoneId, subLocation.c_str());
             
             saveCredentials(tempSSID, tempPassword);  // GUARDAR WiFi para MAESTRO
             saveDeviceConfig(mode, "");  // MAESTRO no necesita MAC
-            saveDeviceLocation(zoneName, subLocation);  // Guardar ubicación
+            saveDeviceLocation(zoneName, subLocation, zoneId);  // Guardar ubicación con zone_id
             
-            String message = "✅ MAESTRO configurado correctamente<br><br>";
-            message += "📶 WiFi: " + tempSSID + " (guardado)<br>";
-            message += "📍 Zona: " + zoneName + "<br>";
-            message += "📍 Sublocalidad: " + subLocation + "<br><br>";
-            message += "🔄 El dispositivo se reiniciará en 3 segundos...";
+            // Respuesta HTML simple y rapida
+            String successHTML = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
+            successHTML += "<style>body{font-family:Arial;text-align:center;padding:50px;background:#f0f0f0;}";
+            successHTML += ".success{background:#4CAF50;color:white;padding:20px;border-radius:8px;margin:20px auto;max-width:400px;}";
+            successHTML += "h1{color:#333;}</style></head><body>";
+            successHTML += "<h1>BovinoIOT</h1>";
+            successHTML += "<div class='success'>";
+            successHTML += "<h2>Configuracion Exitosa</h2>";
+            successHTML += "<p><b>Modo:</b> MAESTRO</p>";
+            successHTML += "<p><b>WiFi:</b> " + tempSSID + "</p>";
+            successHTML += "<p><b>Zona:</b> " + zoneName + "</p>";
+            successHTML += "<p><b>Sublocalidad:</b> " + subLocation + "</p>";
+            successHTML += "<p style='margin-top:20px;'>El dispositivo se reiniciara en 3 segundos...</p>";
+            successHTML += "</div></body></html>";
             
-            configServer.send(200, "text/html", renderPortalPage(message));
+            // Enviar respuesta PRIMERO (HTML simple)
+            sendCORSHeaders();
+            configServer.send(200, "text/html", successHTML);
+            configServer.client().flush();  // Asegurar que se envió
+            delay(200);
+            
+            // Actualizar estado del dispositivo en la base de datos (DESPUES de enviar respuesta)
+            int dispositivoId = dispositivoIdStr.toInt();
+            if (dispositivoId > 0 && WiFi.status() == WL_CONNECTED) {
+                Serial.printf("[Portal] Actualizando dispositivo %d a estado 'active'\n", dispositivoId);
+                bool updated = updateDispositivoStatus(dispositivoId, "active", 100);
+                if (updated) {
+                    Serial.println("[Portal] Estado del dispositivo actualizado");
+                } else {
+                    Serial.println("[Portal] No se pudo actualizar el estado (se procedera de todos modos)");
+                }
+            } else if (dispositivoId > 0) {
+                Serial.println("[Portal] WiFi no conectado - saltando actualizacion de estado");
+            }
             
             delay(3000);
             ESP.restart();  // Reiniciar para aplicar configuración
             
         } else {
             // ESCLAVO: NO guardar WiFi (solo se usó temporalmente)
-            if (masterMac.length() == 0 || masterMac.length() < 17) {
-                Serial.println("[Portal] Error: ESCLAVO requiere MAC del maestro");
-                configServer.send(200, "text/html", renderPortalPage("❌ El modo ESCLAVO requiere la MAC del Maestro."));
+            // Usar la MAC del maestro detectada automáticamente
+            if (detectedMasterMac.length() == 0 || detectedMasterMac.length() < 17) {
+                Serial.println("[Portal] Error: No se encontró un maestro en la zona seleccionada");
+                configServer.send(200, "text/html", renderPortalPage("Error: No se puede configurar un ESCLAVO porque no hay un MAESTRO en esta zona.<br><br>Por favor, configura primero un dispositivo como MAESTRO antes de agregar esclavos."));
                 return;
             }
             
+            masterMac = detectedMasterMac;
+            Serial.printf("[Portal] Usando MAC del maestro detectada automaticamente: %s\n", masterMac.c_str());
+            
             Serial.printf("[Portal] Configurando ESCLAVO\n");
-            Serial.printf("[Portal] MAC Maestro: %s\n", masterMac.c_str());
-            Serial.printf("[Portal] Zona: %s, Sublocalización: %s\n", zoneName.c_str(), subLocation.c_str());
-            Serial.println("[Portal] WiFi NO se guardará (solo para configuración inicial)");
+            Serial.printf("[Portal] MAC Maestro (auto-detectada): %s\n", masterMac.c_str());
+            Serial.printf("[Portal] Zona: %s (ID: %d), Sublocalizacion: %s\n", zoneName.c_str(), zoneId, subLocation.c_str());
+            Serial.println("[Portal] WiFi NO se guardara (solo para configuracion inicial)");
             
             // NO llamar saveCredentials() - El esclavo NO guarda WiFi
             saveDeviceConfig(mode, masterMac);  // Guardar modo ESCLAVO + MAC del maestro
-            saveDeviceLocation(zoneName, subLocation);  // Guardar ubicación
+            saveDeviceLocation(zoneName, subLocation, zoneId);  // Guardar ubicación con zone_id
             
-            String message = "✅ ESCLAVO configurado correctamente<br><br>";
-            message += "📡 MAC Maestro: " + masterMac + "<br>";
-            message += "📍 Zona: " + zoneName + "<br>";
-            message += "📍 Sublocalidad: " + subLocation + "<br><br>";
-            message += "ℹ️ WiFi NO guardado (solo usado para configuración)<br>";
-            message += "🔄 El dispositivo se reiniciará en 3 segundos...";
+            // Respuesta HTML simple y rapida
+            String successHTML = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
+            successHTML += "<style>body{font-family:Arial;text-align:center;padding:50px;background:#f0f0f0;}";
+            successHTML += ".success{background:#4CAF50;color:white;padding:20px;border-radius:8px;margin:20px auto;max-width:400px;}";
+            successHTML += "h1{color:#333;}</style></head><body>";
+            successHTML += "<h1>BovinoIOT</h1>";
+            successHTML += "<div class='success'>";
+            successHTML += "<h2>Configuracion Exitosa</h2>";
+            successHTML += "<p><b>Modo:</b> ESCLAVO</p>";
+            successHTML += "<p><b>MAC Maestro:</b> " + masterMac + "</p>";
+            successHTML += "<p><b>Zona:</b> " + zoneName + "</p>";
+            successHTML += "<p><b>Sublocalidad:</b> " + subLocation + "</p>";
+            successHTML += "<p style='margin-top:20px;'>WiFi NO guardado (solo para configuracion)</p>";
+            successHTML += "<p>El dispositivo se reiniciara en 3 segundos...</p>";
+            successHTML += "</div></body></html>";
             
-            configServer.send(200, "text/html", renderPortalPage(message));
+            // Enviar respuesta PRIMERO (HTML simple)
+            sendCORSHeaders();
+            configServer.send(200, "text/html", successHTML);
+            configServer.client().flush();  // Asegurar que se envió
+            delay(200);
+            
+            // Actualizar estado del dispositivo en la base de datos (DESPUES de enviar respuesta)
+            int dispositivoId = dispositivoIdStr.toInt();
+            if (dispositivoId > 0 && WiFi.status() == WL_CONNECTED) {
+                Serial.printf("[Portal] Actualizando dispositivo %d a estado 'active'\n", dispositivoId);
+                bool updated = updateDispositivoStatus(dispositivoId, "active", 100);
+                if (updated) {
+                    Serial.println("[Portal] Estado del dispositivo actualizado");
+                } else {
+                    Serial.println("[Portal] No se pudo actualizar el estado (se procedera de todos modos)");
+                }
+            } else if (dispositivoId > 0) {
+                Serial.println("[Portal] WiFi no conectado - saltando actualizacion de estado");
+            }
             
             delay(3000);
             ESP.restart();  // Reiniciar para aplicar configuración
-        }
+        }   
     });
     
     // Captive Portal - Redirigir cualquier petición a la página principal
@@ -1212,15 +1543,18 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "var loggedUserName='';";
     page += "var selectedZoneId=null;";
     page += "function showStep(step){";
+    page += "console.log('showStep llamado con step',step);";
     page += "var steps=['step1','step2','step3'];";
     page += "steps.forEach(function(s){";
     page += "var el=document.getElementById(s);";
-    page += "if(el)el.classList.add('hidden');";
+    page += "if(el){el.classList.add('hidden');console.log('Ocultando',s);}";
     page += "});";
     page += "var targetStep=document.getElementById('step'+step);";
-    page += "if(targetStep)targetStep.classList.remove('hidden');";
+    page += "if(targetStep){targetStep.classList.remove('hidden');console.log('Mostrando step',step);}";
+    page += "else{console.error('No se encontro elemento step',step);}";
     page += "currentStep=step;";
     page += "}";
+    page += "var portalBase='http://192.168.4.1';";
     page += "async function connectWifi(){";
     page += "var ssid=document.getElementById('ssid').value;";
     page += "var password=document.getElementById('password').value;";
@@ -1233,8 +1567,16 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "var response=await fetch('/connectWifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ssid='+encodeURIComponent(ssid)+'&password='+encodeURIComponent(password)});";
     page += "var data=await response.json();";
     page += "if(data.success){";
-    page += "document.getElementById('wifi_status').innerHTML='<div style=\"color:green;font-weight:bold;margin:10px 0;\">WiFi Conectado - IP: '+data.ip+'</div>';";
-    page += "showStep(2);";
+    page += "portalBase='http://'+(data.portalIP||'192.168.4.1');";
+    page += "console.log('Portal base URL:',portalBase);";
+    page += "var statusMsg='<div style=\"color:green;font-weight:bold;margin:10px 0;padding:15px;background:#d4edda;border:1px solid #c3e6cb;border-radius:5px;\">';";
+    page += "statusMsg+='WiFi Conectado<br>';";
+    page += "statusMsg+='<small>Red WiFi IP: '+data.ip+'</small><br>';";
+    page += "statusMsg+='<small>Portal IP: '+(data.portalIP||'192.168.4.1')+'</small><br>';";
+    page += "statusMsg+='<small style=\"color:#856404;background:#fff3cd;padding:5px;display:inline-block;margin-top:5px;border-radius:3px;\">Si pierdes conexion, reconectate al AP bovino_io</small>';";
+    page += "statusMsg+='</div>';";
+    page += "document.getElementById('wifi_status').innerHTML=statusMsg;";
+    page += "setTimeout(function(){showStep(2);},500);";
     page += "}else{";
     page += "alert('Error al conectar WiFi: '+data.message);";
     page += "document.getElementById('connect_btn').disabled=false;";
@@ -1249,34 +1591,47 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "async function loginUser(){";
     page += "var email=document.getElementById('login_email').value;";
     page += "var password=document.getElementById('login_password').value;";
-    page += "if(!email || !password){alert('Ingresa email y contraseña');return;}";
+    page += "if(!email || !password){alert('Ingresa email y password');return;}";
     page += "document.getElementById('login_btn').disabled=true;";
-    page += "document.getElementById('login_btn').innerText='Autenticando...';";
+    page += "document.getElementById('login_btn').innerText='Autenticando (puede tardar 90s)...';";
+    page += "document.getElementById('login_status').innerHTML='<div style=\"color:#0056b3;font-size:12px;margin:5px 0;\">Conectando al servidor (puede tardar hasta 90 segundos si esta inactivo)...</div>';";
     page += "try{";
-    page += "var response=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'email='+encodeURIComponent(email)+'&password='+encodeURIComponent(password)});";
+    page += "var loginUrl=(typeof portalBase!=='undefined'?portalBase:'http://192.168.4.1')+'/login';";
+    page += "console.log('Login POST URL:',loginUrl);";
+    page += "var response=await fetch(loginUrl,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'email='+encodeURIComponent(email)+'&password='+encodeURIComponent(password)});";
+    page += "console.log('Login response status:',response.status);";
     page += "var data=await response.json();";
+    page += "console.log('Login response data:',data);";
     page += "if(data.success){";
+    page += "console.log('Login exitoso, user_id:',data.user_id);";
     page += "loggedUserId=data.user_id;";
     page += "loggedUserName=data.name;";
     page += "document.getElementById('login_status').innerHTML='<div style=\"color:green;font-weight:bold;margin:10px 0;\">Bienvenido '+data.name+'</div>';";
+    page += "console.log('Cargando zonas...');";
     page += "await loadZones();";
+    page += "console.log('Zonas cargadas, mostrando step 3');";
     page += "showStep(3);";
     page += "}else{";
     page += "alert('Error: '+data.message);";
     page += "document.getElementById('login_btn').disabled=false;";
-    page += "document.getElementById('login_btn').innerText='Iniciar Sesión';";
+    page += "document.getElementById('login_btn').innerText='Iniciar Sesion';";
     page += "}";
     page += "}catch(error){";
-    page += "alert('Error de conexión: '+error.message);";
+    page += "console.error('loginUser error:',error);";
+    page += "var el=document.getElementById('login_status');if(el)el.innerHTML='<div style=\"color:#b94a48;font-weight:bold;margin:10px 0;\">Error de conexion: '+error.message+'<br>Intenta reconectar al AP: http://192.168.4.1</div>';";
     page += "document.getElementById('login_btn').disabled=false;";
-    page += "document.getElementById('login_btn').innerText='Iniciar Sesión';";
+    page += "document.getElementById('login_btn').innerText='Iniciar Sesion';";
     page += "}";
     page += "}";
     page += "async function loadZones(){";
+    page += "console.log('loadZones iniciado');";
     page += "var zoneSelect=document.getElementById('zone_name');";
     page += "if(zoneSelect)zoneSelect.innerHTML='<option value=\"\">Cargando zonas...</option>';";
     page += "try{";
-    page += "var response=await fetch('/getZones');";
+    page += "var zonesUrl=(typeof portalBase!=='undefined'?portalBase:'http://192.168.4.1')+'/getZones';";
+    page += "console.log('Fetching zones from:',zonesUrl);";
+    page += "var response=await fetch(zonesUrl);";
+    page += "console.log('getZones response status:',response.status);";
     page += "if(!response.ok){throw new Error('Error HTTP '+response.status);}";
     page += "var data=await response.json();";
     page += "console.log('Respuesta /getZones:',data);";
@@ -1305,24 +1660,31 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "var zoneId=selectedOption.getAttribute('data-zone-id');";
     page += "if(zoneId){";
     page += "console.log('Zona seleccionada:',zoneId);";
+    page += "document.getElementById('zone_id').value=zoneId;";
     page += "loadSublocations(zoneId);";
     page += "}";
     page += "}";
     page += "async function loadSublocations(zoneId){";
+    page += "console.log('loadSublocations iniciado con zoneId:',zoneId);";
     page += "var subSelect=document.getElementById('sub_location');";
     page += "if(subSelect)subSelect.innerHTML='<option value=\"\">Cargando sondeadores...</option>';";
-    page += "document.getElementById('device_type_info').style.display='none';";
-    page += "document.getElementById('slave_mac_section').style.display='none';";
+    page += "var deviceInfo=document.getElementById('device_type_info');";
+    page += "if(deviceInfo)deviceInfo.style.display='none';";
+    page += "var slaveMacSection=document.getElementById('slave_mac_section');";
+    page += "if(slaveMacSection)slaveMacSection.style.display='none';";
     page += "try{";
-    page += "var response=await fetch('/getSublocations?zone_id='+zoneId);";
+    page += "var subUrl=(typeof portalBase!=='undefined'?portalBase:'http://192.168.4.1')+'/getSublocations?zone_id='+zoneId;";
+    page += "console.log('Fetching sublocations from:',subUrl);";
+    page += "var response=await fetch(subUrl);";
+    page += "console.log('getSublocations response status:',response.status);";
     page += "if(!response.ok){throw new Error('Error HTTP '+response.status);}";
     page += "var data=await response.json();";
     page += "console.log('Respuesta /getSublocations:',data);";
     page += "var optionsHTML='<option value=\"\">-- Selecciona un sondeador --</option>';";
     page += "if(data.sublocations && Array.isArray(data.sublocations) && data.sublocations.length>0){";
     page += "data.sublocations.forEach(function(subloc){";
-    page += "if(subloc.name){";
-    page += "optionsHTML+='<option value=\"'+subloc.name+'\">'+subloc.name+'</option>';";
+    page += "if(subloc && subloc.name){";
+    page += "optionsHTML+='<option value=\"'+subloc.name+'\" data-device-id=\"'+(subloc.id||'')+'\">'+subloc.name+'</option>';";
     page += "}";
     page += "});";
     page += "console.log('Sondeadores cargados:',data.sublocations.length);";
@@ -1338,8 +1700,15 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "}";
     page += "}";
     page += "function onSubLocationChange(){";
-    page += "var subLocation=document.getElementById('sub_location').value;";
+    page += "var subSelect=document.getElementById('sub_location');";
+    page += "var subLocation=subSelect.value;";
     page += "if(!subLocation){return;}";
+    page += "var selectedOption=subSelect.options[subSelect.selectedIndex];";
+    page += "var deviceId=selectedOption.getAttribute('data-device-id');";
+    page += "if(deviceId){";
+    page += "document.getElementById('dispositivo_id').value=deviceId;";
+    page += "console.log('Device ID guardado:',deviceId);";
+    page += "}";
     page += "var parts=subLocation.split('/');";
     page += "if(parts.length<2){return;}";
     page += "var deviceType=parts[0].toLowerCase();";
@@ -1349,22 +1718,50 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "document.getElementById('temp_password').value=wifiPassword;";
     page += "var infoDiv=document.getElementById('device_type_info');";
     page += "var infoText=document.getElementById('device_type_text');";
-    page += "var slaveMacSection=document.getElementById('slave_mac_section');";
     page += "if(deviceType==='master'){";
     page += "infoText.innerText='Tipo: MAESTRO - Usará WiFi y enviará datos al servidor';";
     page += "infoDiv.style.display='block';";
-    page += "slaveMacSection.style.display='none';";
-    page += "document.getElementById('master_mac').removeAttribute('required');";
     page += "}else if(deviceType==='slave'){";
     page += "infoText.innerText='Tipo: ESCLAVO - Se comunicará con el maestro vía ESP-NOW';";
     page += "infoDiv.style.display='block';";
-    page += "slaveMacSection.style.display='block';";
-    page += "document.getElementById('master_mac').setAttribute('required','required');";
     page += "}else{";
     page += "infoDiv.style.display='none';";
-    page += "slaveMacSection.style.display='none';";
     page += "}";
     page += "}";
+    page += "function saveConfig(event){";
+    page += "event.preventDefault();";
+    page += "console.log('Guardando configuracion...');";
+    page += "var form=document.getElementById('config_form');";
+    page += "var formData=new FormData(form);";
+    page += "var saveBtn=document.getElementById('save_btn');";
+    page += "saveBtn.disabled=true;";
+    page += "saveBtn.innerText='Guardando...';";
+    page += "var baseUrl=portalBase||'http://192.168.4.1';";
+    page += "console.log('Enviando a:',baseUrl+'/save');";
+    page += "fetch(baseUrl+'/save',{";
+    page += "method:'POST',";
+    page += "headers:{'Content-Type':'application/x-www-form-urlencoded'},";
+    page += "body:new URLSearchParams(formData)";
+    page += "}).then(function(response){";
+    page += "console.log('Respuesta recibida:',response.status);";
+    page += "if(response.ok){";
+    page += "return response.text();";
+    page += "}";
+    page += "throw new Error('Error al guardar (status: '+response.status+')');";
+    page += "}).then(function(html){";
+    page += "console.log('HTML recibido, actualizando pagina');";
+    page += "document.body.innerHTML=html;";
+    page += "}).catch(function(error){";
+    page += "console.error('Error al guardar:',error);";
+    page += "alert('Configuracion guardada en el dispositivo. Se reiniciara en breve.');";
+    page += "});";
+    page += "}";
+    page += "window.addEventListener('DOMContentLoaded',function(){";
+    page += "var form=document.getElementById('config_form');";
+    page += "if(form){";
+    page += "form.addEventListener('submit',saveConfig);";
+    page += "}";
+    page += "});";
     page += "</script>";
     page += "</head><body>";
     page += "<div class='container'>";
@@ -1375,7 +1772,7 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "<div id='step1'>";
     page += "<div class='section'>";
     page += "<div class='section-title'>Paso 1: Conectar a WiFi</div>";
-    page += "<p class='help-text'>⚠️ Necesitas WiFi temporalmente para obtener las zonas del servidor</p>";
+    page += "<p class='help-text'>Necesitas WiFi temporalmente para obtener las zonas del servidor</p>";
     page += "<label for='ssid'>Nombre de Red WiFi (SSID)</label>";
     page += "<input type='text' id='ssid' maxlength='32' placeholder='Mi_Red_WiFi'>";
     page += "<label for='password'>Contraseña WiFi</label>";
@@ -1405,6 +1802,8 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "<input type='hidden' id='device_mode' name='device_mode' value=''>";
     page += "<input type='hidden' id='temp_ssid' name='temp_ssid' value=''>";
     page += "<input type='hidden' id='temp_password' name='temp_password' value=''>";
+    page += "<input type='hidden' id='dispositivo_id' name='dispositivo_id' value=''>";
+    page += "<input type='hidden' id='zone_id' name='zone_id' value='0'>";  // Nuevo campo
     page += "<div class='section'>";
     page += "<div class='section-title'>Paso 3: Configuración del Dispositivo</div>";
     page += "<div class='mac-display'>" + localMacStr + "</div>";
@@ -1424,14 +1823,7 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     page += "<p style='margin:0;font-weight:bold;color:#1976d2;' id='device_type_text'></p>";
     page += "</div>";
     page += "</div>";
-    page += "<div id='slave_mac_section' class='section' style='display:none;'>";
-    page += "<div class='section-title'>Configuración de Esclavo</div>";
-    page += "<label for='master_mac'>MAC del Dispositivo Maestro</label>";
-    page += "<input type='text' id='master_mac' name='master_mac' maxlength='17' ";
-    page += "placeholder='AA:BB:CC:DD:EE:FF' pattern='[A-Fa-f0-9:]{17}'>";
-    page += "<p class='help-text'>Ingresa la MAC del dispositivo maestro</p>";
-    page += "</div>";
-    page += "<button type='submit' id='save_btn'>Guardar y Reiniciar</button>";
+    page += "<button type='submit' id='save_btn'>Guardar / Activar dispositivo</button>";
     page += "</form>";
     page += "</div>";
 
@@ -1440,7 +1832,9 @@ String WiFiManager::renderPortalPage(const String& statusMessage) {
     }
 
     page += "<div class='info'>IP: " + WiFi.softAPIP().toString() + "<br>";
-    page += "ID Dispositivo: " + String(DEVICE_ID) + "</div>";
+    String macAddr = WiFi.macAddress();
+    macAddr.replace(":", "");
+    page += "MAC address: " + macAddr + "</div>";
     page += "</div></body></html>";
 
     return page;

@@ -27,10 +27,10 @@ bool APIClient::initializeTimeSync() {
     }
     
     if (now >= 8 * 3600 * 2) {
-        Serial.println("\n[NTP] ✓ Tiempo sincronizado correctamente");
+        Serial.println("\n[NTP]     Tiempo sincronizado correctamente");
         return true;
     } else {
-        Serial.println("\n[NTP] ⚠ Advertencia: Tiempo no sincronizado");
+        Serial.println("\n[NTP]     Advertencia: Tiempo no sincronizado");
         return false;
     }
 }
@@ -135,7 +135,7 @@ bool APIClient::sendAttendance(const std::vector<BleData>& devices, int stageNum
 
         // Límite de intentos (opcional)
         if (attempt > 20) {
-            Serial.println("[API] ⚠ Máximo de intentos alcanzado");
+            Serial.println("[API] Maximo de intentos alcanzado");
             break;
         }
     }
@@ -260,7 +260,7 @@ bool APIClient::sendDetections(const std::map<String, BeaconData>& beacons) {
     bool success = false;
 
     while (!success && attempt <= MAX_RETRY_ATTEMPTS) {
-        // ⚡ CRÍTICO: Liberar memoria antes de cada intento HTTPS
+        //  CRÍTICO: Liberar memoria antes de cada intento HTTPS
         Serial.printf("\n[API] Intento #%d/%d\n", attempt, MAX_RETRY_ATTEMPTS);
         Serial.printf("[API] Memoria libre: %d bytes\n", ESP.getFreeHeap());
         
@@ -279,7 +279,7 @@ bool APIClient::sendDetections(const std::map<String, BeaconData>& beacons) {
 
         // Iniciar conexión HTTP
         if (!http.begin(API_URL)) {
-            Serial.println("[API] ❌ Error: No se pudo iniciar la conexión HTTP");
+            Serial.println("[API]  Error: No se pudo iniciar la conexión HTTP");
             alertManager.loaderOff();
             alertManager.showError();
             delay(2000);
@@ -313,14 +313,14 @@ bool APIClient::sendDetections(const std::map<String, BeaconData>& beacons) {
 
             if (handleResponse(httpCode, response)) {
                 // Éxito
-                Serial.println("[API] ✓ Detecciones enviadas correctamente");
+                Serial.println("[API] Detecciones enviadas correctamente");
                 alertManager.showSuccess();
                 delay(1500);
                 success = true;
             } 
             else if (shouldRetry(httpCode)) {
                 // Error recuperable, reintentar
-                Serial.printf("[API] ⚠ Error %d - Reintentando...\n", httpCode);
+                Serial.printf("[API] Error %d - Reintentando...\n", httpCode);
                 alertManager.showError();
                 unsigned long retryDelay = getRetryDelay(httpCode);
                 delay(retryDelay);
@@ -328,7 +328,7 @@ bool APIClient::sendDetections(const std::map<String, BeaconData>& beacons) {
             } 
             else {
                 // Error no recuperable
-                Serial.printf("[API] ❌ Error no recuperable: %d\n", httpCode);
+                Serial.printf("[API]  Error no recuperable: %d\n", httpCode);
                 alertManager.showError();
                 delay(3000);
                 break;
@@ -336,13 +336,13 @@ bool APIClient::sendDetections(const std::map<String, BeaconData>& beacons) {
         } 
         else {
             // Error de conexión
-            Serial.printf("[API] ❌ Error de conexión: %d (Memoria: %d bytes)\n", 
+            Serial.printf("[API]  Error de conexión: %d (Memoria: %d bytes)\n", 
                          httpCode, ESP.getFreeHeap());
             alertManager.showError();
 
             if (httpCode == -11) {
                 // Error SSL - Memoria insuficiente o timeout
-                Serial.println("[API] ⚠️ Error SSL/TLS - Reconectando WiFi y liberando memoria...");
+                Serial.println("[API]  Error SSL/TLS - Reconectando WiFi y liberando memoria...");
                 wifiManager.reconnect();
                 delay(3000);  // Tiempo extra para estabilización
             }
@@ -355,7 +355,7 @@ bool APIClient::sendDetections(const std::map<String, BeaconData>& beacons) {
     }
 
     if (!success) {
-        Serial.println("[API] ⚠ No se pudieron enviar las detecciones después de todos los intentos");
+        Serial.println("[API]  No se pudieron enviar las detecciones después de todos los intentos");
     }
 
     return success;
@@ -397,27 +397,191 @@ String APIClient::createDetectionsPayload(const std::map<String, BeaconData>& be
         // RSSI
         detection["rssi"] = beacon.rssi;
         
-        // Estado de presencia
-        detection["is_present"] = beacon.isPresent;
-        
-        // Convertir millis a epoch Unix
-        // firstSeen y lastSeen están en millis(), necesitamos convertir a epoch
-        unsigned long millisNow = millis();
-        time_t baseTime = currentTime;
-        
-        // Calcular el tiempo transcurrido desde firstSeen
-        unsigned long millisSinceFirstSeen = millisNow - beacon.firstSeen;
-        time_t firstSeenEpoch = baseTime - (millisSinceFirstSeen / 1000);
-        
-        // Calcular el tiempo transcurrido desde lastSeen
-        unsigned long millisSinceLastSeen = millisNow - beacon.lastSeen;
-        time_t lastSeenEpoch = baseTime - (millisSinceLastSeen / 1000);
-        
-        detection["first_seen"] = firstSeenEpoch;
-        detection["last_seen"] = lastSeenEpoch;
+        // Timestamp actual (epoch)
+        detection["detected_at"] = currentTime;
     }
 
     String payload;
     serializeJson(doc, payload);
     return payload;
+}
+
+// ==================== Consulta Status de Beacon ====================
+String APIClient::checkBeaconStatus(const String& macAddress) {
+    Serial.printf("[API] Consultando status del beacon: %s\n", macAddress.c_str());
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[API] Error: WiFi no conectado");
+        return "unknown";
+    }
+    
+    WiFiClientSecure *client = new WiFiClientSecure();
+    if (!client) {
+        Serial.println("[API] Error: No se pudo crear cliente SSL");
+        return "unknown";
+    }
+    
+    client->setInsecure();
+    client->setTimeout(10);
+    
+    HTTPClient http;
+    http.setTimeout(12000);
+    http.setReuse(false);
+    
+    // Construir URL del endpoint
+    String url = String(API_URL) + "/api/beacon/status/" + macAddress;
+    
+    Serial.printf("[API] URL: %s\n", url.c_str());
+    
+    if (!http.begin(*client, url)) {
+        Serial.println("[API] Error: No se pudo iniciar conexion HTTPS");
+        delete client;
+        return "unknown";
+    }
+    
+    http.addHeader("Content-Type", "application/json");
+    if (strlen(API_KEY) > 0) {
+        http.addHeader("Authorization", String("Bearer ") + API_KEY);
+    }
+    
+    int httpCode = http.GET();
+    String status = "unknown";
+    
+    if (httpCode > 0) {
+        String response = http.getString();
+        Serial.printf("[API] HTTP: %d\n", httpCode);
+        Serial.printf("[API] Respuesta: %s\n", response.c_str());
+        
+        if (httpCode == 200) {
+            DynamicJsonDocument doc(512);
+            DeserializationError error = deserializeJson(doc, response);
+            
+            if (!error) {
+                if (doc.containsKey("status")) {
+                    status = doc["status"].as<String>();
+                    Serial.printf("[API] Status del beacon: %s\n", status.c_str());
+                } else {
+                    Serial.println("[API] Error: Campo 'status' no encontrado");
+                }
+            } else {
+                Serial.printf("[API] Error JSON: %s\n", error.c_str());
+            }
+        } else if (httpCode == 404) {
+            Serial.println("[API] Beacon no encontrado en el sistema");
+            status = "unknown";
+        } else {
+            Serial.printf("[API] Error HTTP: %d\n", httpCode);
+        }
+    } else {
+        Serial.printf("[API] Error de conexion: %d\n", httpCode);
+    }
+    
+    http.end();
+    delete client;
+    
+    return status;
+}
+
+// ==================== Consulta Status de Múltiples Beacons (OPTIMIZADO) ====================
+std::map<String, String> APIClient::checkMultipleBeaconStatus(const std::vector<String>& macAddresses) {
+    std::map<String, String> results;
+    
+    if (macAddresses.empty()) {
+        Serial.println("[API] No hay MACs para consultar");
+        return results;
+    }
+    
+    Serial.printf("[API] Consultando status de %d beacons...\n", macAddresses.size());
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[API] Error: WiFi no conectado");
+        return results;
+    }
+    
+    WiFiClientSecure *client = new WiFiClientSecure();
+    if (!client) {
+        Serial.println("[API] Error: No se pudo crear cliente SSL");
+        return results;
+    }
+    
+    client->setInsecure();
+    client->setTimeout(15);
+    
+    HTTPClient http;
+    http.setTimeout(20000);
+    http.setReuse(false);
+    
+    // Construir URL del endpoint
+    String url = String(API_URL) + "/api/beacons/status/batch";
+    
+    Serial.printf("[API] URL: %s\n", url.c_str());
+    
+    if (!http.begin(*client, url)) {
+        Serial.println("[API] Error: No se pudo iniciar conexion HTTPS");
+        delete client;
+        return results;
+    }
+    
+    http.addHeader("Content-Type", "application/json");
+    if (strlen(API_KEY) > 0) {
+        http.addHeader("Authorization", String("Bearer ") + API_KEY);
+    }
+    
+    // Crear payload JSON con array de MACs
+    DynamicJsonDocument doc(2048);
+    JsonArray macs = doc.createNestedArray("mac_addresses");
+    for (const String& mac : macAddresses) {
+        macs.add(mac);
+    }
+    
+    String payload;
+    serializeJson(doc, payload);
+    
+    Serial.printf("[API] Payload: %s\n", payload.c_str());
+    
+    int httpCode = http.POST(payload);
+    
+    if (httpCode > 0) {
+        String response = http.getString();
+        Serial.printf("[API] HTTP: %d\n", httpCode);
+        Serial.printf("[API] Respuesta: %s\n", response.c_str());
+        
+        if (httpCode == 200) {
+            DynamicJsonDocument responseDoc(4096);
+            DeserializationError error = deserializeJson(responseDoc, response);
+            
+            if (!error) {
+                if (responseDoc.containsKey("beacons")) {
+                    JsonArray beacons = responseDoc["beacons"];
+                    
+                    for (JsonObject beacon : beacons) {
+                        String mac = beacon["mac"].as<String>();
+                        String status = beacon["status"].as<String>();
+                        
+                        // Backend ya filtró: solo envía "unregistered"
+                        // Pero verificamos por seguridad
+                        if (status == "unregistered") {
+                            results[mac] = status;
+                            Serial.printf("[API] %s -> unregistered\n", mac.c_str());
+                        }
+                    }
+                    
+                    Serial.printf("[API] Beacons unregistered recibidos: %d\n", results.size());
+                } else {
+                    Serial.println("[API] Error: Campo 'beacons' no encontrado");
+                }
+            } else {
+                Serial.printf("[API] Error JSON: %s\n", error.c_str());
+            }
+        } else {
+            Serial.printf("[API] Error HTTP: %d\n", httpCode);
+        }
+    } else {
+        Serial.printf("[API] Error de conexion: %d\n", httpCode);
+    }
+    
+    http.end();
+    delete client;
+    
+    return results;
 }

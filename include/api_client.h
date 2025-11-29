@@ -16,6 +16,8 @@ public:
     time_t getCurrentEpoch();                                   // Obtiene epoch actual
     
     bool sendDetections(const std::map<String, BeaconData>& beacons);   // Envía detecciones a la API
+    String checkBeaconStatus(const String& macAddress);         // Consulta status de beacon (unregistered/active/unknown)
+    std::map<String, String> checkMultipleBeaconStatus(const std::vector<String>& macAddresses);  // Consulta status de múltiples beacons
 
 private:
     String createDetectionsPayload(const std::map<String, BeaconData>& beacons);   // Crea payload JSON

@@ -10,42 +10,26 @@
 #include <vector>
 #include "config.h"
 
-enum ScanMode {
-    MODE_ACTIVE,     // Escaneo frecuente (alta actividad)
-    MODE_NORMAL,     // Escaneo estándar (actividad moderada)
-    MODE_ECO         // Escaneo espaciado (baja actividad)
-};
-
+// Clase simplificada: solo escanear y reportar
 class BLEScanner {
 public:
     BLEScanner();
-    bool initialize();                                          // Inicializa el sistema BLE
-    void performScan();                                         // Ejecuta un escaneo BLE
-    float calculateDistance(int8_t rssi);                       // Calcula distancia desde RSSI
-    void updateBehavior(uint32_t animalId, const BeaconData& beacon);   // Actualiza comportamiento del animal
-    void checkMissingAnimals();                                 // Verifica animales perdidos
-    void adjustScanMode();                                      // Ajusta modo de escaneo según actividad
-    std::vector<uint32_t> getCurrentAnimals();                  // Obtiene lista de animales presentes
-    std::vector<uint32_t> getMissingAnimals();                  // Obtiene lista de animales perdidos
-    std::map<String, BeaconData> getBeaconData();              // Obtiene mapa de beacons detectados
-    std::map<uint32_t, AnimalBehavior> getBehaviorData();      // Obtiene mapa de comportamientos
-    ScanMode getCurrentMode();                                  // Obtiene modo de escaneo actual
-    int getAnimalCount();                                       // Cuenta animales presentes
-    void getStats(int& totalScans, int& changesDetected);      // Obtiene estadísticas de escaneo
+    bool initialize();                                  // Inicializa el sistema BLE
+    void performScan();                                 // Ejecuta un escaneo BLE de 2s
+    void startBeaconRegistrationMode();                 // Inicia modo registro de beacons
+    std::map<String, BeaconData> getBeaconData();      // Obtiene snapshot actual de beacons
+    void clearBeacons();                                // Limpia todos los beacons del escaneo anterior
+    float calculateDistance(int8_t rssi);               // Calcula distancia desde RSSI
 
 private:
-    ScanMode currentMode;                                       // Modo de escaneo actual
-    unsigned long lastScanTime;                                 // Timestamp del último escaneo
-    int scansWithoutChange;                                     // Contador de escaneos sin cambios
-    int recentChanges;                                          // Contador de cambios recientes
-    int totalScanCount;                                         // Total de escaneos realizados
-    std::map<String, BeaconData> beacons;                      // Mapa de beacons (clave: MAC_animalID)
-    std::map<uint32_t, AnimalBehavior> behaviors;              // Mapa de comportamientos (clave: animalID)
-
+    std::map<String, BeaconData> beacons;   
+    std::map<String, BeaconData> configurableBeacons;           // Mapa de beacons detectados en el último escaneo
+    std::map<String, unsigned long> registeredBeaconsCache;     // Cache de beacons ya procesados (MAC -> timestamp)
+    
     void processDevice(BLEAdvertisedDevice advertisedDevice);   // Procesa dispositivo BLE detectado
+    bool shouldProcessBeacon(BLEAdvertisedDevice& device);      // Filtra beacons localmente (RSSI, UUID)
     uint32_t extractAnimalId(std::string manufacturerData);     // Extrae ID del animal del beacon
-    int getScanDuration();                                      // Obtiene duración de escaneo según modo
-    unsigned long getScanInterval();                            // Obtiene intervalo de escaneo según modo
+    void publishBeaconsToMQTT(const std::vector<String>& macAddresses);         // Publica beacon unregistered a MQTT
 
     friend class AnimalBeaconCallbacks;
 };

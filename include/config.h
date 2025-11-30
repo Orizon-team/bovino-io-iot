@@ -113,7 +113,7 @@ constexpr int ZUMBADOR = 15;                                // Pin del zumbador
 
 constexpr int RESET_BUTTON = 27;                            // Pin botón de reset
 constexpr unsigned long RESET_BUTTON_HOLD_TIME = 3000;      // Tiempo presión botón para reset (ms)
-constexpr int MODE_BUTTON = 33;                             // Pin switch de modo (LOW=REGISTRO, HIGH=NORMAL)
+constexpr int MODE_BUTTON = 33;                             // Pin botón para salir de modo REGISTRO
 constexpr unsigned long DEBOUNCE_DELAY = 50;                // Retardo anti-rebote (ms)
 
 extern bool beaconRegistrationModeActive;                   // Flag para modo registro de beacons
@@ -153,7 +153,10 @@ struct ESPNowMessage {
 
 void initResetButton();         // Inicializa botón de reset
 bool checkResetButton();        // Verifica si botón está presionado
-void initModeButton();          // Inicializa switch de modo
-bool isRegistrationModeActive(); // Verifica posición del switch (LOW=REGISTRO, HIGH=NORMAL)
+void initModeButton();          // Inicializa botón de modo
+void enterRegistrationMode();   // Activa modo REGISTRO automáticamente
+void exitRegistrationMode();    // Sale del modo REGISTRO manualmente
+void checkModeButtonPress();    // Detecta presión y sale del modo REGISTRO
+bool isRegistrationModeActive(); // Retorna si está en modo REGISTRO
 
 #endif // CONFIG_H

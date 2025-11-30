@@ -8,6 +8,7 @@
 #include "espnow_manager.h"
 #include <Preferences.h>
 #include <esp_system.h>
+#include <ArduinoJson.h>
 
 unsigned long lastCycleTime = 0;
 bool systemReady = false;
@@ -25,6 +26,7 @@ void initializeBLE();
 void finishSetup();
 void processSlaveCycle();
 void processMasterCycle();
+void processRegistrationCycle();
 void handleResetButtonInLoop();
 
 void setup() {
@@ -46,6 +48,12 @@ void setup() {
 void loop() {
     unsigned long now = millis();
     
+    // ==================== DETECCIÓN DE BOTONES (SIEMPRE ACTIVO) ====================
+    if (CURRENT_DEVICE_MODE == DEVICE_MASTER) {
+        checkModeButtonPress();  // Detecta cambios de modo
+    }
+    handleResetButtonInLoop();  // Detecta botón de reset
+    
     // ==================== CICLO CADA 2 SEGUNDOS ====================
     if (now - lastCycleTime >= SCAN_CYCLE_INTERVAL) {
         lastCycleTime = now;
@@ -53,15 +61,18 @@ void loop() {
         if (CURRENT_DEVICE_MODE == DEVICE_SLAVE) {
             processSlaveCycle();
         } else {
-            processMasterCycle();
+            // En modo MAESTRO: verificar si estamos en modo REGISTRO o NORMAL
+            if (isRegistrationModeActive()) {
+                processRegistrationCycle();
+            } else {
+                processMasterCycle();
+            }
         }
     }
     
     if (CURRENT_DEVICE_MODE == DEVICE_MASTER && ENABLE_MQTT) {
         mqttClient.loop();
     }
-    
-    handleResetButtonInLoop();
     
     delay(10);  // Small delay para evitar watchdog
 }
@@ -224,6 +235,14 @@ void initializeMasterMode() {
     wifiManager.begin();
     displayManager.showMessage("WiFi...", "Conectando");
     
+    // Verificar si es primera ejecución después de configurar
+    Preferences prefsFirstRun;
+    bool firstRunAfterConfig = false;
+    if (prefsFirstRun.begin("first_run", true)) {
+        firstRunAfterConfig = prefsFirstRun.getBool("pending", false);
+        prefsFirstRun.end();
+    }
+    
     if (!wifiManager.connect()) {
         Serial.println("[MAIN]     WiFi no disponible. Esperando configuración...");
         Serial.println("[MAIN] BLE deshabilitado durante portal para liberar memoria");
@@ -233,14 +252,20 @@ void initializeMasterMode() {
             delay(10);
         }
         
+        Serial.println("\n[MAIN] ========================================");
         Serial.println("[MAIN] Configuración WiFi completada");
-        Serial.println("[MAIN] Iniciando modo registro de beacons...");
-        beaconRegistrationModeActive = true;
+        Serial.println("[MAIN] ========================================");
         
-        // Inicializar botón de modo
+        // Marcar que hay modo registro pendiente
+        if (prefsFirstRun.begin("first_run", false)) {
+            prefsFirstRun.putBool("pending", true);
+            prefsFirstRun.end();
+        }
+        
+        // Inicializar botón de modo ANTES de entrar al modo registro
         initModeButton();
         
-        // Inicializar MQTT antes del modo registro
+        // Inicializar MQTT
         if (ENABLE_MQTT) {
             mqttClient.initialize();
         }
@@ -250,12 +275,26 @@ void initializeMasterMode() {
             Serial.println("[MAIN] Error al inicializar BLE");
         }
         
-        // Entrar en modo registro de beacons
-        bleScanner.startBeaconRegistrationMode();
+        // ACTIVAR MODO REGISTRO AUTOMÁTICAMENTE después de configurar
+        enterRegistrationMode();
         
-        // Después del modo registro, continuar con setup normal
-        beaconRegistrationModeActive = false;
-        Serial.println("[MAIN] Modo registro finalizado. Continuando con setup normal...");
+    } else if (firstRunAfterConfig) {
+        // Ya tenía WiFi configurado, pero es primera ejecución después de configurar
+        Serial.println("\n[MAIN] ========================================");
+        Serial.println("[MAIN] PRIMERA EJECUCIÓN DESPUÉS DE CONFIGURAR");
+        Serial.println("[MAIN] ========================================");
+        
+        // Limpiar el flag
+        if (prefsFirstRun.begin("first_run", false)) {
+            prefsFirstRun.putBool("pending", false);
+            prefsFirstRun.end();
+        }
+        
+        // Inicializar botón de modo
+        initModeButton();
+        
+        // ACTIVAR MODO REGISTRO AUTOMÁTICAMENTE
+        enterRegistrationMode();
     }
     
     if (ENABLE_MQTT && !mqttClient.isConnected()) {
@@ -338,6 +377,19 @@ void processSlaveCycle() {
 }
 
 void processMasterCycle() {
+    // Log de modo actual (cada 10 ciclos para no saturar)
+    static int cycleCount = 0;
+    if (cycleCount % 10 == 0) {
+        extern bool beaconRegistrationModeActive;
+        extern bool isRegistrationModeActive();
+        
+        bool switchState = isRegistrationModeActive();
+        Serial.printf("\n[MAESTRO] Estado - Switch: %s, Flag: %s\n",
+                     switchState ? "REGISTRO" : "NORMAL",
+                     beaconRegistrationModeActive ? "REGISTRO" : "NORMAL");
+    }
+    cycleCount++;
+    
     Serial.println("\n[MAESTRO] ━━━━━ Ciclo Maestro ━━━━━");
     
     bleScanner.performScan();
@@ -382,6 +434,66 @@ void processMasterCycle() {
     bleScanner.clearBeacons();
     espNowManager.clearReceivedMessages();
     displayManager.showMessage("Maestro", String(allBeacons.size()) + " vacas");
+}
+
+void processRegistrationCycle() {
+    static bool firstTime = true;
+    
+    if (firstTime) {
+        Serial.println("\n[REGISTRO] ==========================================");
+        Serial.println("[REGISTRO] MODO: REGISTRO DE BEACONS ACTIVO");
+        Serial.println("[REGISTRO] Presiona botón para volver a NORMAL");
+        Serial.println("[REGISTRO] ==========================================\n");
+        firstTime = false;
+    }
+    
+    // Escanear beacons
+    bleScanner.performScan();
+    std::map<String, BeaconData> beacons = bleScanner.getBeaconData();
+    
+    if (!beacons.empty()) {
+        std::vector<String> macAddresses;
+        Serial.printf("[REGISTRO] Beacons detectados: %d\n", beacons.size());
+        
+        for (const auto& pair : beacons) {
+            macAddresses.push_back(pair.second.macAddress);
+        }
+        
+        // Publicar a MQTT
+        extern MQTTClient mqttClient;
+        if (mqttClient.isConnected()) {
+            DynamicJsonDocument doc(1024);
+            doc["zone_id"] = LOADED_ZONE_ID;
+            
+            JsonArray macsArray = doc.createNestedArray("macs");
+            for (const String& mac : macAddresses) {
+                macsArray.add(mac);
+            }
+            
+            String payload;
+            serializeJson(doc, payload);
+            
+            Serial.printf("[REGISTRO] Enviando %d MACs al MQTT...\n", macAddresses.size());
+            Serial.printf("[REGISTRO] Payload: %s\n", payload.c_str());
+            
+            mqttClient.publish("bovino_io/register_beacon", payload.c_str());
+        }
+    } else {
+        Serial.println("[REGISTRO] No se detectaron beacons en este ciclo");
+    }
+    
+    bleScanner.clearBeacons();
+    displayManager.showMessage("REGISTRO", String(beacons.size()) + " beacons");
+    
+    // Si salimos del modo registro, resetear flag
+    static bool wasInRegistrationMode = true;
+    if (!isRegistrationModeActive() && wasInRegistrationMode) {
+        Serial.println("\n[REGISTRO] ==========================================");
+        Serial.println("[REGISTRO] VOLVIENDO A MODO NORMAL");
+        Serial.println("[REGISTRO] ==========================================\n");
+        firstTime = true;  // Reset para próxima entrada
+    }
+    wasInRegistrationMode = isRegistrationModeActive();
 }
 
 void handleResetButtonInLoop() {

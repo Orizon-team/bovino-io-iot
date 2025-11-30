@@ -1304,6 +1304,14 @@ void WiFiManager::setupPortalRoutes() {
             saveDeviceConfig(mode, "");  // MAESTRO no necesita MAC
             saveDeviceLocation(zoneName, subLocation, zoneId);  // Guardar ubicación con zone_id
             
+            // Marcar que es primera ejecución después de configurar (para activar modo registro)
+            Preferences prefsFirstRun;
+            if (prefsFirstRun.begin("first_run", false)) {
+                prefsFirstRun.putBool("pending", true);
+                prefsFirstRun.end();
+                Serial.println("[Portal] Flag de primera ejecución marcado");
+            }
+            
             // Respuesta HTML simple y rapida
             String successHTML = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
             successHTML += "<style>body{font-family:Arial;text-align:center;padding:50px;background:#f0f0f0;}";

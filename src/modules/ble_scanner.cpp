@@ -224,27 +224,20 @@ void BLEScanner::startBeaconRegistrationMode() {
     Serial.println("[BLE] MODO: REGISTRO DE BEACONS");
     Serial.println("[BLE] ==========================================");
     Serial.println("[BLE] Este modo permite enlazar beacons con animales");
-    Serial.println("[BLE] Solo se procesan beacons con status 'unregistered'");
-    Serial.println("[BLE] Duracion: 5 minutos o desliza switch a DERECHA para salir");
+    Serial.println("[BLE] Activo mientras el modo este en REGISTRO");
+    Serial.println("[BLE] Presiona boton de nuevo para salir");
     Serial.println("[BLE] ==========================================");
     
     extern bool beaconRegistrationModeActive;
     extern bool isRegistrationModeActive();
     
-    unsigned long startTime = millis();
-    unsigned long registrationTimeout = 5 * 60 * 1000;  // 5 minutos
     unsigned long lastScan = 0;
-    unsigned long scanInterval = 5000;  // Escanear cada 5 segundos (aumentado para dar tiempo a procesar)
+    unsigned long scanInterval = 2000;  // Escanear cada 2 segundos
     
     registeredBeaconsCache.clear();  // Limpiar cache
     
-    while (millis() - startTime < registrationTimeout && beaconRegistrationModeActive) {
-        // Verificar posición del switch
-        if (!isRegistrationModeActive()) {
-            Serial.println("\n[BLE] Switch movido a NORMAL - Saliendo del modo registro...");
-            beaconRegistrationModeActive = false;
-            break;
-        }
+    while (isRegistrationModeActive() && beaconRegistrationModeActive) {
+        // El loop continúa mientras el switch esté en posición IZQUIERDA
         
         if (millis() - lastScan >= scanInterval) {
             Serial.println("[BLE] Escaneando beacons para registro...");
@@ -259,7 +252,7 @@ void BLEScanner::startBeaconRegistrationMode() {
                 int devicesFound = foundDevices.getCount();
                 Serial.printf("[BLE] Dispositivos encontrados: %d\n", devicesFound);
                 
-                // Recolectar todas las MACs detectadas
+                // Recolectar todas las MACs detectadas (sin caché, enviar siempre)
                 for (int i = 0; i < devicesFound; i++) {
                     BLEAdvertisedDevice device = foundDevices.getDevice(i);
                     String mac = String(device.getAddress().toString().c_str());
@@ -270,32 +263,18 @@ void BLEScanner::startBeaconRegistrationMode() {
                         continue;
                     }
                     
-                    // Verificar si ya está en cache (procesado recientemente)
-                    if (registeredBeaconsCache.find(mac) != registeredBeaconsCache.end()) {
-                        unsigned long lastProcessed = registeredBeaconsCache[mac];
-                        if (millis() - lastProcessed < 60000) {  // 60 segundos de cache
-                            continue;
-                        }
-                    }
-                    
+                    // Agregar todas las MACs sin verificar caché
                     detectedMacs.push_back(mac);
                 }
                 
                 pBLEScan->clearResults();
                 
-                // Solo enviar MACs detectadas al MQTT (sin consultar backend)
+                // Enviar todas las MACs detectadas al MQTT cada ciclo
                 if (!detectedMacs.empty()) {
-                    Serial.printf("[BLE] Enviando %d MACs detectadas al MQTT...\n", detectedMacs.size());
-                    
-                    // Enviar todas las MACs en un solo mensaje MQTT
+                    Serial.printf("[BLE] Enviando %d MACs al MQTT...\n", detectedMacs.size());
                     publishBeaconsToMQTT(detectedMacs);
-                    
-                    // Agregar a cache para evitar reprocesar
-                    for (const String& mac : detectedMacs) {
-                        registeredBeaconsCache[mac] = millis();
-                    }
                 } else {
-                    Serial.println("[BLE] No se detectaron beacons nuevos en este escaneo");
+                    Serial.println("[BLE] No se detectaron beacons en este ciclo");
                 }
             }
             
@@ -319,15 +298,29 @@ bool BLEScanner::shouldProcessBeacon(BLEAdvertisedDevice& device) {
         return false;  // Señal muy débil
     }
     
-    // Verificar UUID de iBeacon
-    if (device.haveServiceUUID()) {
-        std::string uuid = device.getServiceUUID().toString();
-        if (uuid != BEACON_UUID_1 && uuid != BEACON_UUID_2) {
-            return false;  // No es uno de nuestros beacons
-        }
+    // Verificar que tenga manufacturer data (iBeacon format)
+    if (!device.haveManufacturerData()) {
+        return false;
     }
     
-    return true;
+    std::string mData = device.getManufacturerData();
+    if (mData.length() < 25) {
+        return false;
+    }
+    
+    uint8_t* data = (uint8_t*)mData.data();
+    uint16_t companyId = data[0] | (data[1] << 8);
+    
+    // Verificar formato iBeacon (0x004C + tipo 0x02)
+    if (companyId != 0x004C || data[2] != 0x02 || data[3] != 0x15) {
+        return false;
+    }
+    
+    // UUID está en bytes 4-19
+    const uint8_t* uuid = &data[4];
+    
+    // Usar la misma función de validación que processDevice
+    return matchesBeaconUUID(uuid, 16);
 }
 
 void BLEScanner::publishBeaconsToMQTT(const std::vector<String>& macAddresses) {

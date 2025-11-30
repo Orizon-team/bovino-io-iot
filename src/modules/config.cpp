@@ -64,19 +64,76 @@ void initResetButton() {
  * Inicializa el botón de cambio de modo
  */
 void initModeButton() {
-    pinMode(MODE_BUTTON, INPUT);  // Sin pull-up, el switch maneja la señal
-    Serial.printf("[Mode] Switch de modo configurado en GPIO%d\n", MODE_BUTTON);
-    Serial.println("[Mode] Izquierda=REGISTRO, Derecha=NORMAL");
+    pinMode(MODE_BUTTON, INPUT_PULLUP);
+    Serial.printf("[Mode] Botón de salida configurado en GPIO%d\n", MODE_BUTTON);
+    Serial.println("[Mode] Presiona para salir del modo REGISTRO");
+}
+
+// Variable estática para mantener el estado del modo
+static bool registrationModeState = false;  // false=NORMAL, true=REGISTRO
+
+/**
+ * Activa el modo registro (llamado automáticamente después de configurar)
+ */
+void enterRegistrationMode() {
+    registrationModeState = true;
+    Serial.println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    Serial.println("[Mode] ✓ MODO REGISTRO ACTIVADO");
+    Serial.println("[Mode] Presiona botón GPIO33 para pasar a MODO NORMAL");
+    Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 }
 
 /**
- * Verifica el estado del switch de modo
- * @return true si está en modo REGISTRO (LOW), false si está en modo NORMAL (HIGH)
+ * Sale del modo registro manualmente
+ */
+void exitRegistrationMode() {
+    if (registrationModeState) {
+        registrationModeState = false;
+        Serial.println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        Serial.println("[Mode] ✓ MODO NORMAL ACTIVADO");
+        Serial.println("[Mode] Dispositivo en modo de detección continua");
+        Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    }
+}
+
+/**
+ * Detecta presión del botón para salir del modo REGISTRO
+ * Debe llamarse en el loop() principal
+ */
+void checkModeButtonPress() {
+    static unsigned long lastDebounceTime = 0;
+    static int lastButtonState = HIGH;
+    static int buttonState = HIGH;
+    
+    int reading = digitalRead(MODE_BUTTON);
+    
+    // Si el estado cambió, reiniciar el temporizador de debounce
+    if (reading != lastButtonState) {
+        lastDebounceTime = millis();
+    }
+    
+    // Si pasó el tiempo de debounce
+    if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
+        // Si el estado del botón cambió
+        if (reading != buttonState) {
+            buttonState = reading;
+            
+            // Si el botón fue presionado (flanco de bajada) Y estamos en modo REGISTRO
+            if (buttonState == LOW && registrationModeState) {
+                exitRegistrationMode();
+            }
+        }
+    }
+    
+    lastButtonState = reading;
+}
+
+/**
+ * Retorna el estado actual del modo
+ * @return true si está en modo REGISTRO, false si está en modo NORMAL
  */
 bool isRegistrationModeActive() {
-    // LOW = GND = Modo REGISTRO
-    // HIGH = 3.3V = Modo NORMAL
-    return digitalRead(MODE_BUTTON) == LOW;
+    return registrationModeState;
 }
 
 bool checkResetButton() {

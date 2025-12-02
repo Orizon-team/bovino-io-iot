@@ -44,7 +44,7 @@ bool MQTTClient::reconnect() {
     
     Serial.println("[MQTT] Intentando conectar al broker...");
     
-    String clientId = "ESP32-" + String(DEVICE_ID);
+    String clientId = "ESP32-" + String(LOADED_DEVICE_ID);
     bool connected = false;
     
     if (strlen(MQTT_USER) > 0 && strlen(MQTT_PASSWORD) > 0) {
@@ -86,7 +86,7 @@ bool MQTTClient::publish(const char* topic, const char* payload) {
 String MQTTClient::createDetectionsPayload(const std::map<String, BeaconData>& beacons) {
     StaticJsonDocument<2048> doc;
     
-    String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
+    String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : LOADED_SUB_LOCATION;
     
     // Obtener la dirección MAC del ESP32
     String macAddress = WiFi.macAddress();

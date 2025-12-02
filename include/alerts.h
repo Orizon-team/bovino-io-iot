@@ -1,6 +1,5 @@
 #ifndef ALERTS_H
 #define ALERTS_H
-
 #include <Arduino.h>
 #include "config.h"
 
@@ -18,7 +17,6 @@ public:
     void beep(int duration = 200);
     void allOff();
     void setColor(uint8_t red, uint8_t green, uint8_t blue);
-
 private:
     void flashColor(uint8_t red, uint8_t green, uint8_t blue, int times, int delayMs);
     bool loaderState;

@@ -1,0 +1,19 @@
+#ifndef BEACON_ENUMS_H
+#define BEACON_ENUMS_H
+
+enum BeaconFilterMode {
+    FILTER_BY_UUID,
+    FILTER_BY_MAC_PREFIX,
+    FILTER_BY_NAME_PREFIX,
+    FILTER_BY_COMPANY_ID,
+    FILTER_DISABLED
+};
+
+enum AnimalIdSource {
+    USE_MAJOR_MINOR,
+    USE_MAJOR_ONLY,
+    USE_MINOR_ONLY,
+    USE_MAC_ADDRESS
+};
+
+#endif

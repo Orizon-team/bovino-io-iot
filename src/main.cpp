@@ -135,6 +135,19 @@ bool loadDeviceConfiguration() {
             String masterMac = prefsDevice.getString("master_mac", "");
             if (masterMac.length() > 0) {
                 Serial.printf("[MAIN] MAC Maestro: %s\n", masterMac.c_str());
+                
+                // Convertir string de MAC a array de bytes
+                int values[6];
+                if (sscanf(masterMac.c_str(), "%x:%x:%x:%x:%x:%x",
+                           &values[0], &values[1], &values[2],
+                           &values[3], &values[4], &values[5]) == 6) {
+                    for (int i = 0; i < 6; i++) {
+                        MASTER_MAC_ADDRESS[i] = (uint8_t)values[i];
+                    }
+                    Serial.println("[MAIN] ✓ MAC del maestro cargada correctamente");
+                } else {
+                    Serial.println("[MAIN] ⚠️ Error al parsear MAC del maestro");
+                }
             }
         } else {
             Serial.println("[MAIN]   Sin configuración guardada");
@@ -340,19 +353,25 @@ void finishSetup() {
 }
 
 void processSlaveCycle() {
-    Serial.println("\n[ESCLAVO] ━━━━━ Ciclo Esclavo ━━━━━");
+    static unsigned long cycleNumber = 0;
+    cycleNumber++;
+    
+    Serial.printf("\n[ESCLAVO] ━━━━━ Ciclo Esclavo #%lu ━━━━━\n", cycleNumber);
+    Serial.printf("[ESCLAVO] Canal WiFi actual: %d\n", WiFi.channel());
     
     bleScanner.performScan();
     std::map<String, BeaconData> beacons = bleScanner.getBeaconData();
     
     if (beacons.size() > 0) {
         Serial.printf("[ESCLAVO] Beacons detectados: %d\n", beacons.size());
+        int sentCount = 0;
+        int failCount = 0;
         
         for (const auto& pair : beacons) {
             const BeaconData& beacon = pair.second;
             
             StaticJsonDocument<256> doc;
-            String currentDeviceId = LOADED_DEVICE_ID.length() > 0 ? LOADED_DEVICE_ID : DEVICE_ID;
+            String currentDeviceId = LOADED_DEVICE_ID.length() > 0 ? LOADED_DEVICE_ID : LOADED_DEVICE_ID;
             String currentLocation = beacon.detectedLocation;
             
             doc["device_id"] = currentDeviceId;
@@ -364,10 +383,21 @@ void processSlaveCycle() {
             String jsonMessage;
             serializeJson(doc, jsonMessage);
             
-            espNowManager.sendToMaster(jsonMessage);
-            Serial.printf("[ESCLAVO] → Enviado: ID=%u, RSSI=%d, Dist=%.2fm\n",
-                         beacon.animalId, beacon.rssi, beacon.distance);
+            bool sent = espNowManager.sendToMaster(jsonMessage);
+            if (sent) {
+                sentCount++;
+                Serial.printf("[ESCLAVO] ✓ Enviado: ID=%u, RSSI=%d, Dist=%.2fm\n",
+                             beacon.animalId, beacon.rssi, beacon.distance);
+            } else {
+                failCount++;
+                Serial.printf("[ESCLAVO] ✗ FALLÓ envío: ID=%u\n", beacon.animalId);
+            }
+            
+            // Pequeño delay para garantizar que el mensaje se transmita antes del siguiente
+            delay(15);
         }
+        
+        Serial.printf("[ESCLAVO] Resumen envíos: %d exitosos, %d fallidos\n", sentCount, failCount);
     } else {
         Serial.println("[ESCLAVO] Sin beacons detectados");
     }
@@ -384,20 +414,36 @@ void processMasterCycle() {
         extern bool isRegistrationModeActive();
         
         bool switchState = isRegistrationModeActive();
-        Serial.printf("\n[MAESTRO] Estado - Switch: %s, Flag: %s\n",
+        int masterChannel = WiFi.channel();
+        Serial.printf("\n[MAESTRO] Estado - Switch: %s, Flag: %s, Canal WiFi: %d\n",
                      switchState ? "REGISTRO" : "NORMAL",
-                     beaconRegistrationModeActive ? "REGISTRO" : "NORMAL");
+                     beaconRegistrationModeActive ? "REGISTRO" : "NORMAL",
+                     masterChannel);
+        Serial.printf("[MAESTRO] MAC: %s\n", WiFi.macAddress().c_str());
     }
     cycleCount++;
     
     Serial.println("\n[MAESTRO] ━━━━━ Ciclo Maestro ━━━━━");
     
+    // Leer y limpiar mensajes ESP-NOW INMEDIATAMENTE para no perder paquetes
+    std::vector<ESPNowMessage> receivedMsgs = espNowManager.getReceivedMessages();
+    int msgCount = receivedMsgs.size();
+    espNowManager.clearReceivedMessages();  // Limpiar AHORA para capturar nuevos mensajes
+    Serial.printf("[MAESTRO] Mensajes de esclavos: %d\n", msgCount);
+    
+    // DEBUG: Mostrar detalles de cada mensaje recibido
+    if (msgCount > 0) {
+        Serial.println("[MAESTRO] ━━━ Detalles de mensajes ESP-NOW ━━━");
+        for (size_t i = 0; i < receivedMsgs.size(); i++) {
+            const ESPNowMessage& msg = receivedMsgs[i];
+            Serial.printf("  [%d] ID=%u, Ubicación=%s, RSSI=%d, Dist=%.2fm\n",
+                         i + 1, msg.animalId, msg.location, msg.rssi, msg.distance);
+        }
+    }
+    
     bleScanner.performScan();
     std::map<String, BeaconData> localBeacons = bleScanner.getBeaconData();
     Serial.printf("[MAESTRO] Beacons locales: %d\n", localBeacons.size());
-    
-    std::vector<ESPNowMessage> receivedMsgs = espNowManager.getReceivedMessages();
-    Serial.printf("[MAESTRO] Mensajes de esclavos: %d\n", receivedMsgs.size());
     
     std::map<String, BeaconData> allBeacons = localBeacons;
     
@@ -432,7 +478,6 @@ void processMasterCycle() {
     }
     
     bleScanner.clearBeacons();
-    espNowManager.clearReceivedMessages();
     displayManager.showMessage("Maestro", String(allBeacons.size()) + " vacas");
 }
 

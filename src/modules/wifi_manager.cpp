@@ -304,9 +304,9 @@ void WiFiManager::loadDeviceLocation() {
             Serial.printf("  - Device ID: %s\n", LOADED_DEVICE_ID.c_str());
         } else {
             Serial.println("[Config] No hay ubicación guardada, usando valores por defecto");
-            LOADED_ZONE_NAME = DEVICE_LOCATION;  // Usar valor hardcoded como fallback
-            LOADED_SUB_LOCATION = DEVICE_LOCATION;
-            LOADED_DEVICE_ID = DEVICE_ID;
+            LOADED_ZONE_NAME = LOADED_ZONE_NAME;  // Usar valor hardcoded como fallback
+            LOADED_SUB_LOCATION = LOADED_SUB_LOCATION;
+            LOADED_DEVICE_ID = LOADED_DEVICE_ID;
             LOADED_ZONE_ID = 0;
         }
         

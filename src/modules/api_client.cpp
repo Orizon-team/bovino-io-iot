@@ -3,14 +3,10 @@
 #include "alerts.h"
 #include "display_manager.h"
 
-// Definición de la instancia global
 APIClient apiClient;
 
-// ==================== Constructor ====================
 APIClient::APIClient() {
 }
-
-// ==================== Sincronización de Tiempo ====================
 bool APIClient::initializeTimeSync() {
     Serial.println("[NTP] Sincronizando tiempo con servidores NTP...");
     
@@ -39,151 +35,6 @@ time_t APIClient::getCurrentEpoch() {
     return time(NULL);
 }
 
-// ==================== Envío de Asistencias ====================
-// TODO: Refactorizar para sistema de ganado - Temporalmente deshabilitado
-/*
-bool APIClient::sendAttendance(const std::vector<BleData>& devices, int stageNumber) {
-    Serial.println("\n========================================");
-    Serial.printf("  Enviando Asistencias - Etapa %d\n", stageNumber);
-    Serial.println("========================================");
-
-    // Crear el payload JSON
-    String payload = createPayload(devices);
-    
-    Serial.println("[API] Payload:");
-    Serial.println(payload);
-
-    int attempt = 1;
-    bool success = false;
-
-    while (!success) {
-        HTTPClient http;
-        http.setTimeout(HTTP_TIMEOUT);
-
-        displayManager.showPostStatus(stageNumber, attempt);
-        Serial.printf("\n[API] Intento #%d - POST a: %s\n", attempt, API_URL);
-
-        alertManager.loaderOn();
-
-        // Iniciar conexión HTTP
-        if (!http.begin(API_URL)) {
-            Serial.println("[API] ❌ Error: No se pudo iniciar la conexión HTTP");
-            alertManager.loaderOff();
-            alertManager.showError();
-            delay(2000);
-            attempt++;
-            continue;
-        }
-
-        // Configurar headers
-        http.addHeader("Content-Type", "application/json");
-
-        delay(1000);
-
-        // Enviar POST
-        int httpCode = http.POST(payload);
-        
-        alertManager.loaderOff();
-
-        if (httpCode > 0) {
-            String response = http.getString();
-            Serial.printf("[API] Código HTTP: %d\n", httpCode);
-            Serial.println("[API] Respuesta:");
-            Serial.println(response);
-
-            if (handleResponse(httpCode, response)) {
-                // Éxito
-                displayManager.showPostSuccess(stageNumber, httpCode);
-                alertManager.showSuccess();
-                delay(1500);
-                success = true;
-            } 
-            else if (shouldRetry(httpCode)) {
-                // Error recuperable, reintentar
-                displayManager.showServerError(httpCode);
-                alertManager.showError();
-                unsigned long retryDelay = getRetryDelay(httpCode);
-                delay(retryDelay);
-                attempt++;
-            } 
-            else {
-                // Error no recuperable
-                Serial.printf("[API] ❌ Error no recuperable: %d\n", httpCode);
-                displayManager.showHTTPError(stageNumber, httpCode);
-                alertManager.showError();
-                delay(3000);
-                attempt++;
-            }
-        } 
-        else {
-            // Error de conexión
-            Serial.printf("[API] ❌ Error de conexión: %d\n", httpCode);
-            displayManager.showHTTPError(stageNumber, httpCode);
-            alertManager.showError();
-
-            if (httpCode == -11) {
-                // Conexión perdida, reconectar WiFi
-                Serial.println("[API] Reconectando WiFi...");
-                wifiManager.reconnect();
-            }
-
-            delay(2000);
-            attempt++;
-        }
-
-        http.end();
-
-        // Límite de intentos (opcional)
-        if (attempt > 20) {
-            Serial.println("[API] Maximo de intentos alcanzado");
-            break;
-        }
-    }
-
-    return success;
-}
-
-// ==================== Creación de Payload ====================
-String APIClient::createPayload(const std::vector<BleData>& devices) {
-    DynamicJsonDocument doc(1024);
-    
-    doc["id_device"] = ID_DEVICE;
-    
-    // Obtener timestamp actual
-    String timestamp = getCurrentTimestamp();
-    doc["data_time"] = timestamp;
-
-    // Array de asistencias
-    JsonArray attendances = doc.createNestedArray("attendances");
-
-    if (!devices.empty()) {
-        time_t now = time(NULL);
-        now -= 6 * 3600;  // Ajuste de zona horaria (GMT-6)
-
-        for (const auto& device : devices) {
-            JsonObject att = attendances.createNestedObject();
-            att["id_student"] = device.studentId;
-
-            // Calcular el tiempo de detección
-            unsigned long ms = device.detectionTime;
-            time_t detectedEpoch = now - ((millis() - ms) / 1000);
-            
-            struct tm* detectedTimeinfo = gmtime(&detectedEpoch);
-            char detectedIsoTime[25];
-            strftime(detectedIsoTime, sizeof(detectedIsoTime), "%Y-%m-%dT%H:%M:%SZ", detectedTimeinfo);
-            
-            att["attendance_time"] = detectedIsoTime;
-        }
-    }
-
-    String payload;
-    serializeJson(doc, payload);
-    return payload;
-}
-
-*/
-
-// ==================== Timestamp Actual ====================
 String APIClient::getCurrentTimestamp() {
     time_t now = time(NULL);
     now -= 6 * 3600;  // Ajuste de zona horaria (GMT-6)
@@ -363,12 +214,12 @@ bool APIClient::sendDetections(const std::map<String, BeaconData>& beacons) {
 
 // ==================== Creación de Payload de Detecciones ====================
 String APIClient::createDetectionsPayload(const std::map<String, BeaconData>& beacons) {
-    // ⚡ OPTIMIZACIÓN: Reducir tamaño del documento para evitar error -11
+    // OPTIMIZACIÓN: Reducir tamaño del documento para evitar error -11
     DynamicJsonDocument doc(1536);  // Reducido de 2048 a 1536 bytes
     
-    // Datos del dispositivo - usar valores cargados si están disponibles
-    String currentDeviceId = LOADED_DEVICE_ID.length() > 0 ? LOADED_DEVICE_ID : DEVICE_ID;
-    String currentZoneName = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
+    // Datos del dispositivo - usar valores cargados con fallback automático
+    String currentDeviceId = String(getDeviceId());
+    String currentZoneName = String(getDeviceLocation());
     doc["device_id"] = currentDeviceId;
     doc["zone_name"] = currentZoneName;
     
@@ -387,9 +238,8 @@ String APIClient::createDetectionsPayload(const std::map<String, BeaconData>& be
         // ID del tag (animal)
         detection["tag_id"] = beacon.animalId;
         
-        // Ubicación del dispositivo - usar valor cargado si está disponible
-        String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
-        detection["device_location"] = currentLocation;
+        // Ubicación del dispositivo
+        detection["device_location"] = getDeviceLocation();
         
         // Distancia calculada
         detection["distance"] = round(beacon.distance * 100.0) / 100.0;  // 2 decimales

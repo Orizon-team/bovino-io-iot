@@ -14,8 +14,8 @@ BLEScanner::BLEScanner() {
 // ==================== Inicialización ====================
 bool BLEScanner::initialize() {
     Serial.println("[BLE] Sistema de Monitoreo de Ganado - BovinoIOT");
-    Serial.printf("[BLE] Zona: %s\n", DEVICE_LOCATION);
-    Serial.printf("[BLE] ID Dispositivo: %s\n", DEVICE_ID);
+    Serial.printf("[BLE] Zona: %s\n", getDeviceLocation());
+    Serial.printf("[BLE] ID Dispositivo: %s\n", getDeviceId());
     
     try {
         Serial.println("[BLE] Limpiando estado anterior de BLE...");
@@ -168,7 +168,7 @@ void BLEScanner::processDevice(BLEAdvertisedDevice advertisedDevice) {
     float distance = calculateDistance(rssi);
     
     // Obtener ubicación actual
-    String currentLocation = LOADED_ZONE_NAME.length() > 0 ? LOADED_ZONE_NAME : DEVICE_LOCATION;
+    String currentLocation = String(getDeviceLocation());
     if (LOADED_SUB_LOCATION.length() > 0) {
         int slashPos = LOADED_SUB_LOCATION.indexOf('/');
         if (slashPos > 0) {

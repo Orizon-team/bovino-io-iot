@@ -15,7 +15,8 @@ ESPNowManager::ESPNowManager() : isMaster(false) {
 // Callback para recibir datos
 void ESPNowManager::onDataReceive(const uint8_t* mac, const uint8_t* data, int len) {
     if (len != sizeof(ESPNowMessage)) {
-        Serial.println("[ESP-NOW] Tamaño de mensaje incorrecto");
+        Serial.printf("[ESP-NOW] ⚠️ Tamaño incorrecto: %d bytes (esperado: %d)\n", 
+                     len, sizeof(ESPNowMessage));
         return;
     }
 
@@ -23,8 +24,9 @@ void ESPNowManager::onDataReceive(const uint8_t* mac, const uint8_t* data, int l
     memcpy(&msg, data, sizeof(ESPNowMessage));
     staticReceivedMessages.push_back(msg);
 
-    Serial.printf("[ESP-NOW] Mensaje recibido de %02X:%02X:%02X:%02X:%02X:%02X\n",
-                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    Serial.printf("[ESP-NOW] ✓ Recibido de %02X:%02X:%02X:%02X:%02X:%02X - ID=%u, Buffer: %d msgs\n",
+                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+                  msg.animalId, staticReceivedMessages.size());
 }
 
 // Inicializar como maestro
@@ -37,20 +39,46 @@ bool ESPNowManager::initializeMaster() {
     }
     
     if (esp_now_init() != ESP_OK) {
-        Serial.println("[ESP-NOW] Error al inicializar ESP-NOW");
+        Serial.println("[ESP-NOW] ❌ Error al inicializar ESP-NOW");
         return false;
     }
 
-    esp_now_register_recv_cb(onDataReceive);
+    esp_err_t cb_result = esp_now_register_recv_cb(onDataReceive);
+    if (cb_result == ESP_OK) {
+        Serial.println("[ESP-NOW] ✓ Callback de recepción registrado exitosamente");
+    } else {
+        Serial.printf("[ESP-NOW] ❌ Error al registrar callback: %d\n", cb_result);
+        return false;
+    }
+    
+    // Agregar peer broadcast para recibir de cualquier esclavo
+    esp_now_peer_info_t broadcastPeer;
+    memset(&broadcastPeer, 0, sizeof(esp_now_peer_info_t));
+    memset(broadcastPeer.peer_addr, 0xFF, 6);  // Broadcast address
+    broadcastPeer.channel = 0;  // Canal actual
+    broadcastPeer.encrypt = false;
+    
+    esp_err_t peer_result = esp_now_add_peer(&broadcastPeer);
+    if (peer_result == ESP_OK) {
+        Serial.println("[ESP-NOW] ✓ Peer broadcast agregado (recibe de todos los esclavos)");
+    } else if (peer_result == ESP_ERR_ESPNOW_EXIST) {
+        Serial.println("[ESP-NOW] ⓘ Peer broadcast ya existe");
+    } else {
+        Serial.printf("[ESP-NOW] ⚠️ No se pudo agregar peer broadcast: %d\n", peer_result);
+    }
     
     isMaster = true;
     
     // Obtener canal actual del WiFi
-    int currentChannel = WiFi.channel();
-    Serial.println("[ESP-NOW] Maestro inicializado correctamente");
+    uint8_t currentChannel;
+    wifi_second_chan_t secondChannel;
+    esp_wifi_get_channel(&currentChannel, &secondChannel);
+    
+    Serial.println("[ESP-NOW] ✓ Maestro inicializado correctamente");
     Serial.printf("[ESP-NOW] MAC Address: %s\n", WiFi.macAddress().c_str());
-    Serial.printf("[ESP-NOW] Canal WiFi actual: %d\n", currentChannel);
-    Serial.println("[ESP-NOW] ADVERTENCIA: El esclavo debe usar el mismo canal para comunicarse");
+    Serial.printf("[ESP-NOW] Canal WiFi: %d (secundario: %d)\n", currentChannel, secondChannel);
+    Serial.println("[ESP-NOW] ⚠️ IMPORTANTE: Esclavo debe usar el mismo canal");
+    Serial.println("[ESP-NOW] Esperando mensajes ESP-NOW...");
     
     return true;
 }

@@ -24,4 +24,4 @@ private:
 
 extern AlertManager alertManager;
 
-#endif // ALERTS_H
+#endif

@@ -9,13 +9,12 @@ AlertManager::AlertManager() : loaderState(false) {
 
 // ==================== Inicialización ====================
 void AlertManager::initialize() {
-    // Configurar pines RGB como salida
+
     pinMode(LED_RGB_RED, OUTPUT);
     pinMode(LED_RGB_GREEN, OUTPUT);
     pinMode(LED_RGB_BLUE, OUTPUT);
     pinMode(ZUMBADOR, OUTPUT);
 
-    // Apagar LED RGB y buzzer
     allOff();
 
     Serial.println("[Alerts] Sistema de alertas inicializado");

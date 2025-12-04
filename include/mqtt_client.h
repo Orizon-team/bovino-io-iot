@@ -10,22 +10,22 @@
 class MQTTClient {
 public:
     MQTTClient();
-    bool initialize();                                          // Inicializa y conecta al broker MQTT
-    bool isConnected();                                         // Verifica si está conectado
-    bool reconnect();                                           // Reconecta al broker
-    void loop();                                                // Mantiene la conexión activa
-    bool sendDetections(const std::map<String, BeaconData>& beacons);   // Envía detecciones al broker
-    bool publish(const char* topic, const char* payload);       // Publica mensaje a un topic
+    bool initialize();
+    bool isConnected();
+    bool reconnect();
+    void loop();
+    bool sendDetections(const std::map<String, BeaconData>& beacons);
+    bool publish(const char* topic, const char* payload);
 
 private:
-    WiFiClientSecure wifiClient;                                // Cliente WiFi con TLS
-    PubSubClient mqttClient;                                    // Cliente MQTT
-    unsigned long lastReconnectAttempt;                         // Timestamp del último intento de reconexión
+    WiFiClientSecure wifiClient;
+    PubSubClient mqttClient;
+    unsigned long lastReconnectAttempt;
     
-    String createDetectionsPayload(const std::map<String, BeaconData>& beacons);   // Crea payload JSON
-    static void messageCallback(char* topic, byte* payload, unsigned int length);  // Callback de mensajes
+    String createDetectionsPayload(const std::map<String, BeaconData>& beacons);
+    static void messageCallback(char* topic, byte* payload, unsigned int length);
 };
 
 extern MQTTClient mqttClient;
 
-#endif // MQTT_CLIENT_H
+#endif

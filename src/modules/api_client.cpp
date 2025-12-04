@@ -7,6 +7,7 @@ APIClient apiClient;
 
 APIClient::APIClient() {
 }
+
 bool APIClient::initializeTimeSync() {
     Serial.println("[NTP] Sincronizando tiempo con servidores NTP...");
     

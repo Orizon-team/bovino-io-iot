@@ -10,26 +10,25 @@
 #include <vector>
 #include "config.h"
 
-// Clase simplificada: solo escanear y reportar
 class BLEScanner {
 public:
     BLEScanner();
-    bool initialize();                                  // Inicializa el sistema BLE
-    void performScan();                                 // Ejecuta un escaneo BLE de 2s
-    void startBeaconRegistrationMode();                 // Inicia modo registro de beacons
-    std::map<String, BeaconData> getBeaconData();      // Obtiene snapshot actual de beacons
-    void clearBeacons();                                // Limpia todos los beacons del escaneo anterior
-    float calculateDistance(int8_t rssi);               // Calcula distancia desde RSSI
+    bool initialize();
+    void performScan();
+    void startBeaconRegistrationMode();
+    std::map<String, BeaconData> getBeaconData();
+    void clearBeacons();
+    float calculateDistance(int8_t rssi);
 
 private:
     std::map<String, BeaconData> beacons;   
-    std::map<String, BeaconData> configurableBeacons;           // Mapa de beacons detectados en el último escaneo
-    std::map<String, unsigned long> registeredBeaconsCache;     // Cache de beacons ya procesados (MAC -> timestamp)
+    std::map<String, BeaconData> configurableBeacons;
+    std::map<String, unsigned long> registeredBeaconsCache;
     
-    void processDevice(BLEAdvertisedDevice advertisedDevice);   // Procesa dispositivo BLE detectado
-    bool shouldProcessBeacon(BLEAdvertisedDevice& device);      // Filtra beacons localmente (RSSI, UUID)
-    uint32_t extractAnimalId(std::string manufacturerData);     // Extrae ID del animal del beacon
-    void publishBeaconsToMQTT(const std::vector<String>& macAddresses);         // Publica beacon unregistered a MQTT
+    void processDevice(BLEAdvertisedDevice advertisedDevice);
+    bool shouldProcessBeacon(BLEAdvertisedDevice& device);
+    uint32_t extractAnimalId(std::string manufacturerData);
+    void publishBeaconsToMQTT(const std::vector<String>& macAddresses);
 
     friend class AnimalBeaconCallbacks;
 };
@@ -37,7 +36,7 @@ private:
 class AnimalBeaconCallbacks : public BLEAdvertisedDeviceCallbacks {
 public:
     AnimalBeaconCallbacks(BLEScanner* scanner);
-    void onResult(BLEAdvertisedDevice advertisedDevice) override;   // Callback al detectar dispositivo
+    void onResult(BLEAdvertisedDevice advertisedDevice) override;
 
 private:
     BLEScanner* bleScanner;
@@ -45,4 +44,4 @@ private:
 
 extern BLEScanner bleScanner;
 
-#endif // BLE_SCANNER_H
+#endif

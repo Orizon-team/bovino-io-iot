@@ -31,4 +31,4 @@ private:
 
 extern DisplayManager displayManager;
 
-#endif // DISPLAY_MANAGER_H
+#endif

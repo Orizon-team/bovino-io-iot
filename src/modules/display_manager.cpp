@@ -3,12 +3,9 @@
 // Definición de la instancia global
 DisplayManager displayManager;
 
-// ==================== Constructor ====================
 DisplayManager::DisplayManager() {
-    // Inicializar LCD I2C con dirección y dimensiones desde config.h
     lcd = new LiquidCrystal_I2C(LCD_I2C_ADDR, LCD_COLS, LCD_ROWS);
 }
-
 // ==================== Inicialización ====================
 void DisplayManager::initialize() {
     lcd->init();           // Inicializar LCD I2C

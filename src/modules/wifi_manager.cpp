@@ -4,21 +4,8 @@
 #include <Preferences.h>
 #include <cstring>
 
-// Definición de la instancia global
 WiFiManager wifiManager;
 
-// Sublocalizaciones hardcode (temporalmente)
-const String SUB_LOCATIONS[] = {
-    "Bebedero Norte",
-    "Bebedero Sur",
-    "Comedero Este",
-    "Comedero Oeste",
-    "Área de Descanso",
-    "Zona de Pastoreo"
-};
-const int SUB_LOCATIONS_COUNT = 6;
-
-// ==================== Constructor ====================
 WiFiManager::WiFiManager()
         : configServer(80),
             lastConnectionAttempt(0),
@@ -1316,6 +1303,7 @@ void WiFiManager::setupPortalRoutes() {
             String successHTML = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
             successHTML += "<style>body{font-family:Arial;text-align:center;padding:50px;background:#f0f0f0;}";
             successHTML += ".success{background:#4CAF50;color:white;padding:20px;border-radius:8px;margin:20px auto;max-width:400px;}";
+            successHTML += ".success p,.success b{color:white;}";
             successHTML += "h1{color:#333;}</style></head><body>";
             successHTML += "<h1>BovinoIOT</h1>";
             successHTML += "<div class='success'>";
@@ -1375,6 +1363,7 @@ void WiFiManager::setupPortalRoutes() {
             String successHTML = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
             successHTML += "<style>body{font-family:Arial;text-align:center;padding:50px;background:#f0f0f0;}";
             successHTML += ".success{background:#4CAF50;color:white;padding:20px;border-radius:8px;margin:20px auto;max-width:400px;}";
+            successHTML += ".success p,.success b{color:white;}";
             successHTML += "h1{color:#333;}</style></head><body>";
             successHTML += "<h1>BovinoIOT</h1>";
             successHTML += "<div class='success'>";
